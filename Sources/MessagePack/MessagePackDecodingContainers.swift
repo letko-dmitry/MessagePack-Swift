@@ -4,29 +4,39 @@ import Foundation
 
 /// Entry offsets for one wire map, scanned once at container creation.
 /// A class so the rolling search index survives the container being copied
-/// into `KeyedDecodingContainer`'s box.
+/// into `KeyedDecodingContainer`'s box. Instances are recycled through
+/// ``MessagePackDecodingContext/borrowKeyedStorage()``, so `scan` must leave
+/// no state behind from a previous use.
 final class MessagePackKeyedStorage {
     struct Entry {
         let keyOffset: Int
         let valueOffset: Int
     }
 
-    let entries: [Entry]
+    var entries: [Entry] = []
     /// Where the next key lookup starts. Keys are usually requested in wire
     /// order, so remembering the last match makes typical lookups O(1).
     var searchIndex = 0
 
-    init(entryCount: Int, parser: inout MessagePackSerializer.Parser) throws(MessagePackError) {
-        var entries: [Entry] = []
-        entries.reserveCapacity(entryCount)
+    func scan(
+        entryCount: Int, parser: inout MessagePackSerializer.Parser
+    ) throws(MessagePackError) {
+        // Build into a local array (with the stored one detached so the
+        // local is uniquely referenced), keeping the append loop free of
+        // class-property exclusivity and uniqueness checks.
+        var scanned = entries
+        entries = []
+        searchIndex = 0
+        scanned.removeAll(keepingCapacity: true)
+        scanned.reserveCapacity(entryCount)
         for _ in 0..<entryCount {
             let keyOffset = parser.offset
             try parser.skipValue()
             let valueOffset = parser.offset
             try parser.skipValue()
-            entries.append(Entry(keyOffset: keyOffset, valueOffset: valueOffset))
+            scanned.append(Entry(keyOffset: keyOffset, valueOffset: valueOffset))
         }
-        self.entries = entries
+        entries = scanned
     }
 }
 

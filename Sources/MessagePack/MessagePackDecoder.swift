@@ -66,10 +66,35 @@ final class MessagePackDecodingContext {
     var memoStart = -1
     var memoEnd = -1
 
+    /// Recycled keyed-container storages. Decoding a homogeneous array of
+    /// structs otherwise allocates a fresh storage object plus its entry
+    /// array per element; reuse eliminates both, and
+    /// `isKnownUniquelyReferenced` keeps a storage alive as long as any
+    /// container still references it.
+    private var storagePool: [MessagePackKeyedStorage] = []
+
     init(base: UnsafeRawPointer?, count: Int, userInfo: [CodingUserInfoKey: Any]) {
         self.base = base
         self.count = count
         self.userInfo = userInfo
+    }
+
+    /// Returns a keyed storage no live container references, or a fresh one.
+    /// The pool is bounded: with more than `poolLimit` containers alive at
+    /// once (keyed nesting that deep is rare), extra storages are simply not
+    /// pooled.
+    func borrowKeyedStorage() -> MessagePackKeyedStorage {
+        for index in storagePool.indices {
+            if isKnownUniquelyReferenced(&storagePool[index]) {
+                return storagePool[index]
+            }
+        }
+        let storage = MessagePackKeyedStorage()
+        let poolLimit = 8
+        if storagePool.count < poolLimit {
+            storagePool.append(storage)
+        }
+        return storage
     }
 
     @inline(__always)
@@ -443,9 +468,9 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         guard entryCount <= (parser.count - parser.offset) / 2 else {
             throw MessagePackDecoding.corrupted(.insufficientData, codingPath)
         }
-        let storage: MessagePackKeyedStorage
+        let storage = context.borrowKeyedStorage()
         do throws(MessagePackError) {
-            storage = try MessagePackKeyedStorage(entryCount: entryCount, parser: &parser)
+            try storage.scan(entryCount: entryCount, parser: &parser)
         } catch {
             throw MessagePackDecoding.corrupted(error, codingPath)
         }

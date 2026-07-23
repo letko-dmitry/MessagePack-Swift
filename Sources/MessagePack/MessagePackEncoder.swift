@@ -161,95 +161,107 @@ final class MessagePackEncoderImpl {
     /// container machinery (and its per-value encoder and coding-path
     /// allocations); the path closure only runs when a value actually needs
     /// it (nested encoders and errors).
+    ///
+    /// Native types are matched by metadata equality and then read through
+    /// one shared pointer to `value`. Two alternatives measured worse:
+    /// `as!` in every branch makes the compiler reserve a dynamically sized
+    /// stack temporary per cast site in the entry block, probing the stack
+    /// (`chkstk`) 22 times on every call (~7% of encoding time); a single
+    /// conditional cast to an internal protocol replaces that with
+    /// `swift_conformsToProtocol` plus existential `tryCast`, which is
+    /// slower than this whole chain of pointer-equality checks.
     func encodeEncodable<T: Encodable>(
         _ value: T, codingPath: @autoclosure () -> [CodingKey]
     ) throws {
-        if T.self == String.self {
-            state.pointee.buffer.writeString(value as! String)
-        } else if T.self == Int.self {
-            state.pointee.buffer.writeInt(Int64(value as! Int))
-        } else if T.self == Bool.self {
-            state.pointee.buffer.writeBool(value as! Bool)
-        } else if T.self == Double.self {
-            state.pointee.buffer.writeDouble(value as! Double)
-        } else if T.self == Float.self {
-            state.pointee.buffer.writeFloat(value as! Float)
-        } else if T.self == Int64.self {
-            state.pointee.buffer.writeInt(value as! Int64)
-        } else if T.self == UInt64.self {
-            state.pointee.buffer.writeUInt(value as! UInt64)
-        } else if T.self == Int32.self {
-            state.pointee.buffer.writeInt(Int64(value as! Int32))
-        } else if T.self == UInt32.self {
-            state.pointee.buffer.writeUInt(UInt64(value as! UInt32))
-        } else if T.self == Int16.self {
-            state.pointee.buffer.writeInt(Int64(value as! Int16))
-        } else if T.self == UInt16.self {
-            state.pointee.buffer.writeUInt(UInt64(value as! UInt16))
-        } else if T.self == Int8.self {
-            state.pointee.buffer.writeInt(Int64(value as! Int8))
-        } else if T.self == UInt8.self {
-            state.pointee.buffer.writeUInt(UInt64(value as! UInt8))
-        } else if T.self == UInt.self {
-            state.pointee.buffer.writeUInt(UInt64(value as! UInt))
-        } else if T.self == [Int].self {
-            encodePrimitiveArray(value as! [Int]) { $0.writeInt(Int64($1)) }
-        } else if T.self == [String].self {
-            encodePrimitiveArray(value as! [String]) { $0.writeString($1) }
-        } else if T.self == [Double].self {
-            encodePrimitiveArray(value as! [Double]) { $0.writeDouble($1) }
-        } else if T.self == [Bool].self {
-            encodePrimitiveArray(value as! [Bool]) { $0.writeBool($1) }
-        } else if T.self == [Float].self {
-            encodePrimitiveArray(value as! [Float]) { $0.writeFloat($1) }
-        } else if T.self == [Int64].self {
-            encodePrimitiveArray(value as! [Int64]) { $0.writeInt($1) }
-        } else if T.self == [UInt64].self {
-            encodePrimitiveArray(value as! [UInt64]) { $0.writeUInt($1) }
-        } else if T.self == [Int32].self {
-            encodePrimitiveArray(value as! [Int32]) { $0.writeInt(Int64($1)) }
-        } else if T.self == [UInt32].self {
-            encodePrimitiveArray(value as! [UInt32]) { $0.writeUInt(UInt64($1)) }
-        } else if T.self == [Int16].self {
-            encodePrimitiveArray(value as! [Int16]) { $0.writeInt(Int64($1)) }
-        } else if T.self == [UInt16].self {
-            encodePrimitiveArray(value as! [UInt16]) { $0.writeUInt(UInt64($1)) }
-        } else if T.self == [Int8].self {
-            encodePrimitiveArray(value as! [Int8]) { $0.writeInt(Int64($1)) }
-        } else if T.self == [UInt8].self {
-            encodePrimitiveArray(value as! [UInt8]) { $0.writeUInt(UInt64($1)) }
-        } else if T.self == [UInt].self {
-            encodePrimitiveArray(value as! [UInt]) { $0.writeUInt(UInt64($1)) }
-        } else if T.self == Date.self {
-            let date = value as! Date
-            guard let timestamp = MessagePackTimestamp(exactly: date) else {
-                throw EncodingError.invalidValue(
-                    value,
-                    EncodingError.Context(
-                        codingPath: codingPath(),
-                        debugDescription:
-                            "Date (timeIntervalSince1970: \(date.timeIntervalSince1970)) cannot be represented as a MessagePack timestamp"
-                    ))
-            }
-            state.pointee.buffer.writeExt(type: MessagePackTimestamp.extType, data: timestamp.data)
-        } else if T.self == Data.self {
-            state.pointee.buffer.writeBinary(value as! Data)
-        } else if T.self == MessagePackTimestamp.self {
-            let timestamp = value as! MessagePackTimestamp
-            state.pointee.buffer.writeExt(type: MessagePackTimestamp.extType, data: timestamp.data)
-        } else {
-            let path = codingPath()
-            let before = state.pointee.buffer.offset
-            try value.encode(to: _MessagePackEncoder(impl: self, codingPath: path))
-            if state.pointee.buffer.offset == before {
-                // MessagePack has no representation for "no value at all";
-                // JSONEncoder throws in the same situation.
-                throw EncodingError.invalidValue(
-                    value,
-                    EncodingError.Context(
-                        codingPath: path,
-                        debugDescription: "Value of type \(T.self) did not encode any values"
-                    ))
+        try withUnsafePointer(to: value) { pointer in
+            let raw = UnsafeRawPointer(pointer)
+            if T.self == String.self {
+                state.pointee.buffer.writeString(raw.assumingMemoryBound(to: String.self).pointee)
+            } else if T.self == Int.self {
+                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int.self).pointee))
+            } else if T.self == Bool.self {
+                state.pointee.buffer.writeBool(raw.assumingMemoryBound(to: Bool.self).pointee)
+            } else if T.self == Double.self {
+                state.pointee.buffer.writeDouble(raw.assumingMemoryBound(to: Double.self).pointee)
+            } else if T.self == Float.self {
+                state.pointee.buffer.writeFloat(raw.assumingMemoryBound(to: Float.self).pointee)
+            } else if T.self == Int64.self {
+                state.pointee.buffer.writeInt(raw.assumingMemoryBound(to: Int64.self).pointee)
+            } else if T.self == UInt64.self {
+                state.pointee.buffer.writeUInt(raw.assumingMemoryBound(to: UInt64.self).pointee)
+            } else if T.self == Int32.self {
+                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int32.self).pointee))
+            } else if T.self == UInt32.self {
+                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt32.self).pointee))
+            } else if T.self == Int16.self {
+                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int16.self).pointee))
+            } else if T.self == UInt16.self {
+                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt16.self).pointee))
+            } else if T.self == Int8.self {
+                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int8.self).pointee))
+            } else if T.self == UInt8.self {
+                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt8.self).pointee))
+            } else if T.self == UInt.self {
+                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt.self).pointee))
+            } else if T.self == [Int].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int].self).pointee) { $0.writeInt(Int64($1)) }
+            } else if T.self == [String].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [String].self).pointee) { $0.writeString($1) }
+            } else if T.self == [Double].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [Double].self).pointee) { $0.writeDouble($1) }
+            } else if T.self == [Bool].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [Bool].self).pointee) { $0.writeBool($1) }
+            } else if T.self == [Float].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [Float].self).pointee) { $0.writeFloat($1) }
+            } else if T.self == [Int64].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int64].self).pointee) { $0.writeInt($1) }
+            } else if T.self == [UInt64].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt64].self).pointee) { $0.writeUInt($1) }
+            } else if T.self == [Int32].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int32].self).pointee) { $0.writeInt(Int64($1)) }
+            } else if T.self == [UInt32].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt32].self).pointee) { $0.writeUInt(UInt64($1)) }
+            } else if T.self == [Int16].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int16].self).pointee) { $0.writeInt(Int64($1)) }
+            } else if T.self == [UInt16].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt16].self).pointee) { $0.writeUInt(UInt64($1)) }
+            } else if T.self == [Int8].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int8].self).pointee) { $0.writeInt(Int64($1)) }
+            } else if T.self == [UInt8].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt8].self).pointee) { $0.writeUInt(UInt64($1)) }
+            } else if T.self == [UInt].self {
+                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt].self).pointee) { $0.writeUInt(UInt64($1)) }
+            } else if T.self == Date.self {
+                let date = raw.assumingMemoryBound(to: Date.self).pointee
+                guard let timestamp = MessagePackTimestamp(exactly: date) else {
+                    throw EncodingError.invalidValue(
+                        value,
+                        EncodingError.Context(
+                            codingPath: codingPath(),
+                            debugDescription:
+                                "Date (timeIntervalSince1970: \(date.timeIntervalSince1970)) cannot be represented as a MessagePack timestamp"
+                        ))
+                }
+                state.pointee.buffer.writeExt(type: MessagePackTimestamp.extType, data: timestamp.data)
+            } else if T.self == Data.self {
+                state.pointee.buffer.writeBinary(raw.assumingMemoryBound(to: Data.self).pointee)
+            } else if T.self == MessagePackTimestamp.self {
+                let timestamp = raw.assumingMemoryBound(to: MessagePackTimestamp.self).pointee
+                state.pointee.buffer.writeExt(type: MessagePackTimestamp.extType, data: timestamp.data)
+            } else {
+                let path = codingPath()
+                let before = state.pointee.buffer.offset
+                try value.encode(to: _MessagePackEncoder(impl: self, codingPath: path))
+                if state.pointee.buffer.offset == before {
+                    // MessagePack has no representation for "no value at all";
+                    // JSONEncoder throws in the same situation.
+                    throw EncodingError.invalidValue(
+                        value,
+                        EncodingError.Context(
+                            codingPath: path,
+                            debugDescription: "Value of type \(T.self) did not encode any values"
+                        ))
+                }
             }
         }
     }
