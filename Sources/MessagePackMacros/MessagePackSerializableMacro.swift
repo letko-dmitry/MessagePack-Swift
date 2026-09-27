@@ -158,8 +158,10 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
         let conformanceClause = protocols.isEmpty ? "" : ": MessagePack.MessagePackSerializable"
         let whereClause = genericWhereClause(of: structDecl, fields: fields)
 
+        // `nonisolated` so the conformance and its members stay usable from nonisolated
+        // contexts in modules compiled with default MainActor isolation (SE-0466).
         let extensionSource = """
-            extension \(type.trimmed)\(conformanceClause)\(whereClause) {
+            nonisolated extension \(type.trimmed)\(conformanceClause)\(whereClause) {
             \(serializeMethod(fields: fields, access: access))
 
             \(initializer(fields: fields, access: access))

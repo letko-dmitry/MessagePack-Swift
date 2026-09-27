@@ -12,6 +12,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: Benchmarks/MessagePackBenchmarks
+
 jobs:
   benchmark:
     runs-on: macos-26
@@ -43,9 +47,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            .build
+            Benchmarks/MessagePackBenchmarks/.build
             ~/Library/Caches/org.swift.swiftpm
-          key: messagepack-benchmarks-${{ runner.os }}-${{ hashFiles('Package.swift') }}
+          key: messagepack-benchmarks-${{ runner.os }}-${{ hashFiles('Package.swift', 'Benchmarks/MessagePackBenchmarks/Package.swift') }}
           restore-keys: |
             messagepack-benchmarks-${{ runner.os }}-
 
@@ -70,5 +74,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: messagepack-benchmarks-baseline
-          path: .benchmarkBaselines/
+          path: Benchmarks/MessagePackBenchmarks/.benchmarkBaselines/
           include-hidden-files: true

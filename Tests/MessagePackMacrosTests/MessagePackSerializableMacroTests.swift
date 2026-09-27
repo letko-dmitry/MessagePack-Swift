@@ -27,7 +27,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                     let hoge: String
                 }
 
-                extension Foo {
+                nonisolated extension Foo {
                     func serialize(into writer: inout MessagePack.MessagePackWriter) {
                         writer.writeRaw(0x72_6162_a382, count: 5) // key "bar"
                         self.`bar`.serialize(into: &writer)
@@ -97,7 +97,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                     var count: Int = 5
                 }
 
-                extension Foo {
+                nonisolated extension Foo {
                     func serialize(into writer: inout MessagePack.MessagePackWriter) {
                         writer.writeRaw(0x656d_616e_a482, count: 6) // key "name"
                         self.`name`.serialize(into: &writer)
@@ -161,7 +161,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                     let version: Int = 1
                 }
 
-                extension Foo {
+                nonisolated extension Foo {
                     func serialize(into writer: inout MessagePack.MessagePackWriter) {
                         writer.writeRaw(0x6e_a182, count: 3) // key "n"
                         self.`name`.serialize(into: &writer)
@@ -218,7 +218,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                     var second: [B]
                 }
 
-                extension Pair where A: MessagePack.MessagePackSerializable, B: MessagePack.MessagePackSerializable {
+                nonisolated extension Pair where A: MessagePack.MessagePackSerializable, B: MessagePack.MessagePackSerializable {
                     func serialize(into writer: inout MessagePack.MessagePackWriter) {
                         writer.writeRaw(0x74_7372_6966_a582, count: 7) // key "first"
                         self.`first`.serialize(into: &writer)
@@ -286,7 +286,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                     public var a: Int
                 }
 
-                extension Solo {
+                nonisolated extension Solo {
                     public func serialize(into writer: inout MessagePack.MessagePackWriter) {
                         writer.writeRaw(0x61_a181, count: 3) // key "a"
                         self.`a`.serialize(into: &writer)
@@ -335,7 +335,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
             expandedSource: """
                 struct Empty {}
 
-                extension Empty {
+                nonisolated extension Empty {
                     func serialize(into writer: inout MessagePack.MessagePackWriter) {
                         writer.writeRaw(0x80, count: 1)
                     }
@@ -374,7 +374,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                     var sharedPrefixGamma: Int
                 }
 
-                extension Trie {
+                nonisolated extension Trie {
                     func serialize(into writer: inout MessagePack.MessagePackWriter) {
                         writer.writeRaw(0x6465_7261_6873_b183, count: 8) // key "sharedPrefixAlpha"
                         writer.writeRaw(0x6c41_7869_6665_7250, count: 8)
@@ -615,7 +615,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                     var cache: String?
                 }
 
-                extension Foo {
+                nonisolated extension Foo {
                     func serialize(into writer: inout MessagePack.MessagePackWriter) {
                         writer.writeRaw(0x7470_656b_a481, count: 6) // key "kept"
                         self.`kept`.serialize(into: &writer)

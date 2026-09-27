@@ -1,6 +1,7 @@
 .DS_Store
 /.build
 /Benchmarks/Comparison/.build
+/Benchmarks/MessagePackBenchmarks/.build
 /Packages
 xcuserdata/
 DerivedData/

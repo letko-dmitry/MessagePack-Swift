@@ -229,11 +229,14 @@ p50 wall clock, same fixtures as the macro table:
 
 ## Benchmarks
 
-Uses [ordo-one/benchmark](https://github.com/ordo-one/benchmark):
+`Benchmarks/MessagePackBenchmarks` is a separate package (like the comparison
+above) using [ordo-one/benchmark](https://github.com/ordo-one/benchmark), so the
+benchmark harness and jemalloc never enter the dependency graph of this
+package's consumers:
 
 ```sh
 brew install jemalloc   # once
-swift package --allow-writing-to-package-directory benchmark
+swift package --package-path Benchmarks/MessagePackBenchmarks benchmark
 ```
 
 Same runner and metric as the
