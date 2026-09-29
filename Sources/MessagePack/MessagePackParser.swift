@@ -7,6 +7,10 @@ import Foundation
 /// the `#available` scope: checking `#available` on every call costs a
 /// `__isPlatformVersionAtLeast` runtime call, which profiled at ~10% of
 /// struct-decode time.
+///
+/// watchOS 10 lacks `String(validating:)`, so there the bytes are decoded
+/// with repair and compared back. Foundation's `String(bytes:encoding:)` is
+/// not a substitute: it drops a leading BOM.
 @usableFromInline
 let messagePackMakeString: @Sendable (UnsafeBufferPointer<UInt8>) -> String? = {
     if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
@@ -14,8 +18,13 @@ let messagePackMakeString: @Sendable (UnsafeBufferPointer<UInt8>) -> String? = {
             guard let span = try? UTF8Span(validating: bytes.span) else { return nil }
             return String(copying: span)
         }
-    } else {
+    } else if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *) {
         return { bytes in String(validating: bytes, as: UTF8.self) }
+    } else {
+        return { bytes in
+            let string = String(decoding: bytes, as: UTF8.self)
+            return string.utf8.elementsEqual(bytes) ? string : nil
+        }
     }
 }()
 
