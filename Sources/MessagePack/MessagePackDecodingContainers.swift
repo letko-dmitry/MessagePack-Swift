@@ -402,6 +402,16 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
         try decodeScalar(type, forKey: key, MessagePackDecoding.readInteger)
     }
 
+    @available(watchOS 11.0, *)
+    func decode(_ type: Int128.Type, forKey key: Key) throws -> Int128 {
+        try decodeScalar(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    @available(watchOS 11.0, *)
+    func decode(_ type: UInt128.Type, forKey key: Key) throws -> UInt128 {
+        try decodeScalar(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
     func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
         try decode(type, entry: try requireEntry(key), forKey: key)
     }
@@ -459,6 +469,16 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     }
 
     func decodeIfPresent(_ type: UInt64.Type, forKey key: Key) throws -> UInt64? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    @available(watchOS 11.0, *)
+    func decodeIfPresent(_ type: Int128.Type, forKey key: Key) throws -> Int128? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    @available(watchOS 11.0, *)
+    func decodeIfPresent(_ type: UInt128.Type, forKey key: Key) throws -> UInt128? {
         try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
     }
 
@@ -558,6 +578,12 @@ struct MessagePackNilDecoder: Decoder, SingleValueDecodingContainer {
     func decode(_ type: UInt16.Type) throws -> UInt16 { throw valueNotFound(type) }
     func decode(_ type: UInt32.Type) throws -> UInt32 { throw valueNotFound(type) }
     func decode(_ type: UInt64.Type) throws -> UInt64 { throw valueNotFound(type) }
+
+    @available(watchOS 11.0, *)
+    func decode(_ type: Int128.Type) throws -> Int128 { throw valueNotFound(type) }
+
+    @available(watchOS 11.0, *)
+    func decode(_ type: UInt128.Type) throws -> UInt128 { throw valueNotFound(type) }
 
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
         // Lets Optional<T> decode as nil via its own conformance; anything
@@ -688,6 +714,16 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     }
 
     mutating func decode(_ type: UInt64.Type) throws -> UInt64 {
+        try decodeScalar(type, MessagePackDecoding.readInteger)
+    }
+
+    @available(watchOS 11.0, *)
+    mutating func decode(_ type: Int128.Type) throws -> Int128 {
+        try decodeScalar(type, MessagePackDecoding.readInteger)
+    }
+
+    @available(watchOS 11.0, *)
+    mutating func decode(_ type: UInt128.Type) throws -> UInt128 {
         try decodeScalar(type, MessagePackDecoding.readInteger)
     }
 
