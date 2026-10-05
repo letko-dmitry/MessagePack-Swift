@@ -1,13 +1,15 @@
 /// A collection type with an encode and decode fast path: an array of a
-/// natively represented value type.
+/// natively represented value type, or a string-keyed dictionary of the
+/// value types such maps carry in practice (metadata, counters, flags).
 enum MessagePackCollectionType {
     case intArray, stringArray, doubleArray, boolArray, floatArray, int64Array,
         uInt64Array, int32Array, uInt32Array, int16Array, uInt16Array, int8Array,
         uInt8Array, uIntArray
+    case intDictionary, stringDictionary, doubleDictionary, boolDictionary
 
     /// The fast-path collection type `type` is, if any.
     ///
-    /// Non-generic and out of line: comparing `T.self` with 14 generic types
+    /// Non-generic and out of line: comparing `T.self` with 18 generic types
     /// inline in the coders' generic dispatch made every other value pay for
     /// their metadata accessors and stack temporaries.
     @inline(never)
@@ -29,6 +31,10 @@ enum MessagePackCollectionType {
         case identifiers.int8Array: self = .int8Array
         case identifiers.uInt8Array: self = .uInt8Array
         case identifiers.uIntArray: self = .uIntArray
+        case identifiers.intDictionary: self = .intDictionary
+        case identifiers.stringDictionary: self = .stringDictionary
+        case identifiers.doubleDictionary: self = .doubleDictionary
+        case identifiers.boolDictionary: self = .boolDictionary
         default: return nil
         }
     }
@@ -53,5 +59,10 @@ enum MessagePackCollectionType {
         let int8Array = ObjectIdentifier([Int8].self)
         let uInt8Array = ObjectIdentifier([UInt8].self)
         let uIntArray = ObjectIdentifier([UInt].self)
+
+        let intDictionary = ObjectIdentifier([String: Int].self)
+        let stringDictionary = ObjectIdentifier([String: String].self)
+        let doubleDictionary = ObjectIdentifier([String: Double].self)
+        let boolDictionary = ObjectIdentifier([String: Bool].self)
     }
 }
