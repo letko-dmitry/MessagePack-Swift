@@ -47,24 +47,24 @@ extension MessagePackDecoding {
         case .uIntArray:
             return try primitiveArray(&parser, path, readInteger) as [UInt] as! T
         case .intDictionary:
-            if let dictionary = try primitiveDictionary(&parser, path, readIntegerInlined) as [String: Int]? {
+            if let dictionary = primitiveDictionary(&parser, readIntegerInlined) as [String: Int]? {
                 return dictionary as! T
             }
         case .stringDictionary:
-            if let dictionary = try primitiveDictionary(&parser, path, readString) as [String: String]? {
+            if let dictionary = primitiveDictionary(&parser, readString) as [String: String]? {
                 return dictionary as! T
             }
         case .doubleDictionary:
-            if let dictionary = try primitiveDictionary(&parser, path, readDouble) as [String: Double]? {
+            if let dictionary = primitiveDictionary(&parser, readDouble) as [String: Double]? {
                 return dictionary as! T
             }
         case .boolDictionary:
-            if let dictionary = try primitiveDictionary(&parser, path, readBool) as [String: Bool]? {
+            if let dictionary = primitiveDictionary(&parser, readBool) as [String: Bool]? {
                 return dictionary as! T
             }
         }
 
-        // A map with a non-string key.
+        // Anything but a map of unique string keys and values of the type.
         return try decodeWithContainers(type, parser: &parser, context: context, path: path())
     }
 
@@ -110,57 +110,34 @@ extension MessagePackDecoding {
 
     /// Decodes a string-keyed dictionary of a natively represented value
     /// type with a tight loop over the raw bytes, like ``primitiveArray``.
-    /// Duplicate keys keep the first value, like `Dictionary.init(from:)`.
     ///
-    /// Returns nil with the parser rewound when a key is not a string:
-    /// `Dictionary.init(from:)` turns integer keys into their decimal
-    /// strings, so such maps take the container machinery instead.
+    /// Returns nil with the parser rewound for anything but a map of unique
+    /// string keys and values of type `V`, which the container machinery
+    /// then decodes as before this fast path: `Dictionary.init(from:)` turns
+    /// integer keys into their decimal strings, skips keys that are not
+    /// valid UTF-8, keeps whichever of duplicate keys its lookups reach last,
+    /// and reports errors with its types and paths.
     static func primitiveDictionary<V>(
         _ parser: inout Parser,
-        _ path: () -> MessagePackCodingPath,
         _ read: (inout Parser) throws(MessagePackDecodeFailure) -> V
-    ) throws -> [String: V]? {
+    ) -> [String: V]? {
         let startOffset = parser.offset
-        let headerCount: Int?
-        do throws(MessagePackError) {
-            headerCount = try parser.readRawMapHeader()
-        } catch {
-            throw corrupted(error, path(), offset: startOffset)
-        }
-        guard let entryCount = headerCount else {
-            throw wrongType([String: V].self, parser, path())
-        }
-        // Each entry takes at least two bytes; reject hostile counts before
-        // reserving storage.
-        guard entryCount <= (parser.count &- parser.offset) / 2 else {
-            throw corrupted(.insufficientData, path(), offset: startOffset)
+        // Each entry takes at least two bytes, so a larger count is hostile:
+        // leave it to the machinery before reserving storage.
+        guard let entryCount = try? parser.readRawMapHeader(),
+              entryCount <= (parser.count &- parser.offset) / 2 else {
+            parser.offset = startOffset
+            return nil
         }
 
         var result = [String: V](minimumCapacity: Swift.min(entryCount, messagePackMaxPreallocation))
 
         for _ in 0..<entryCount {
-            let key: String?
-            do throws(MessagePackError) {
-                key = try parser.readRawString()
-            } catch {
-                throw corrupted(error, path(), offset: startOffset)
-            }
-            guard let key else {
+            guard let key = try? parser.readRawString(),
+                  let value = try? read(&parser),
+                  result.updateValue(value, forKey: key) == nil else {
                 parser.offset = startOffset
                 return nil
-            }
-            let valueStart = parser.offset
-            do throws(MessagePackDecodeFailure) {
-                // The first of duplicate keys wins, as through
-                // `Dictionary.init(from:)`, which looks each key up.
-                if let first = result.updateValue(try read(&parser), forKey: key) {
-                    result[key] = first
-                }
-            } catch {
-                parser.offset = valueStart
-                throw decodingError(
-                    error, type: V.self, parser: parser,
-                    path: path().appending(MessagePackCodingKey(stringValue: key)))
             }
         }
         return result

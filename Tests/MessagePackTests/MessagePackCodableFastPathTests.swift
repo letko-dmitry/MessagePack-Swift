@@ -436,20 +436,33 @@ struct CodableStringKeyedDictionaryTests {
         #expect(try MessagePackEncoder().encode(dictionary) == MessagePackEncoder().encode(ViaContainer(dictionary: dictionary)))
     }
 
-    @Test func duplicateWireKeysFirstWins() throws {
-        // fixmap(2) { "a": 1, "a": 2 }, as `Dictionary.init(from:)` reads it.
-        let data = Data([0x82, 0xa1, 0x61, 0x01, 0xa1, 0x61, 0x02])
-        #expect(try MessagePackDecoder().decode([String: Int].self, from: data) == ["a": 1])
-        // The same through the container route, which `[String: Int8]` takes.
-        #expect(try MessagePackDecoder().decode([String: Int8].self, from: data) == ["a": 1])
+    /// Maps the fast path leaves to the container route, which `[String: Int8]`
+    /// always takes, decode as through it.
+    @Test func duplicateWireKeysDecodeAsThroughTheContainers() throws {
+        // fixmap(2) { "a": 1, "a": 2 }: the second lookup of "a" starts at
+        // the first match.
+        let adjacent = Data([0x82, 0xa1, 0x61, 0x01, 0xa1, 0x61, 0x02])
+        #expect(try MessagePackDecoder().decode([String: Int].self, from: adjacent) == ["a": 1])
+        #expect(try MessagePackDecoder().decode([String: Int8].self, from: adjacent) == ["a": 1])
+
+        // fixmap(3) { "a": 1, "b": 2, "a": 3 }: it starts after "b".
+        let apart = Data([0x83, 0xa1, 0x61, 0x01, 0xa1, 0x62, 0x02, 0xa1, 0x61, 0x03])
+        #expect(try MessagePackDecoder().decode([String: Int].self, from: apart) == ["a": 3, "b": 2])
+        #expect(try MessagePackDecoder().decode([String: Int8].self, from: apart) == ["a": 3, "b": 2])
+    }
+
+    @Test func keysThatAreNotUTF8AreSkipped() throws {
+        // fixmap(2) { "\xff": 1, "b": 2 }
+        let data = Data([0x82, 0xa1, 0xff, 0x01, 0xa1, 0x62, 0x02])
+        #expect(try MessagePackDecoder().decode([String: Int].self, from: data) == ["b": 2])
+        #expect(try MessagePackDecoder().decode([String: Int8].self, from: data) == ["b": 2])
     }
 
     @Test func duplicateKeysInStructsReadTheFirst() throws {
         // The spec leaves duplicate keys to the implementation. The value
-        // tree and the macro route keep the last entry; `Codable` (structs and
-        // dictionaries alike) looks keys up and reads the first, since finding
-        // a later duplicate would cost every lookup a scan of the rest of the
-        // map.
+        // tree and the macro route keep the last entry; `Codable` looks each
+        // key up starting from the previous match, so a lone field reads the
+        // first entry.
         struct Box: Decodable {
             var value: Int
         }
@@ -470,10 +483,13 @@ struct CodableStringKeyedDictionaryTests {
         #expect(path == ["outer", "b"])
     }
 
-    @Test func nonMapValueThrows() throws {
+    @Test func nonMapValueIsAMismatchForAnyDictionary() throws {
         let data = try MessagePackSerializer.serialize(value: .array([.uint8(1)]))
-        #expect(throws: DecodingError.self) {
+        #expect {
             try MessagePackDecoder().decode([String: Int].self, from: data)
+        } throws: { error in
+            guard case DecodingError.typeMismatch(let type, _) = error else { return false }
+            return type == [String: Any].self
         }
     }
 }
