@@ -122,8 +122,9 @@ let deserialized: Foo = try MessagePackSerializer.deserialize(Foo.self, from: se
   escaping a conformance would be unsound, and the compiler now rejects it.
   When reading containers manually, balance each header read with
   `endContainer()`.
-- `serialize` is non-throwing (single pass into a growable buffer, handed
-  to `Data` without copying); unrepresentable values (strings/containers
+- `serialize` is non-throwing (single pass into a buffer that starts on
+  the stack: a small result is copied into an exactly sized `Data`, a
+  larger one is handed over without copying); unrepresentable values (strings/containers
   over MessagePack's 2^32-1 limits, dates outside the timestamp range) stop
   with a precondition failure, unlike the throwing `serialize(value:)` /
   `MessagePackEncoder` routes. `deserialize` uses typed throws
@@ -163,37 +164,46 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   `MessagePackTimestamp` ↔ ext type -1. Dates that cannot be represented as
   a timestamp (non-finite, out of `Int64` seconds range) throw
   `EncodingError.invalidValue`.
-- Integers encode with the smallest wire format and decode from any integer
-  format that fits the requested type; out-of-range numbers (including
-  float64 → `Float` overflow) throw instead of truncating.
-- Encoder output is byte-identical to `MessagePackSerializer.serialize` of
-  the equivalent value tree (smallest headers everywhere).
-- Both coders are `Sendable` (unchecked, value-semantic — like
-  `JSONEncoder`, values placed in `userInfo` must be `Sendable` for
-  cross-task use).
-- Codable edge cases behave like `JSONEncoder`/`JSONDecoder`: repeated
-  `container(keyedBy:)` requests merge into one map, a `superEncoder()`
-  that is never used contributes nothing (its entry is written lazily on
-  first use), `superDecoder()` for a missing key decodes as nil, and a
-  value that encodes nothing throws. Because encoding is streaming, writes
-  must be well nested — out-of-order writes to an already-closed container
-  trap with a precondition failure instead of corrupting output. Decoding
-  enforces a nesting-depth limit (128) against hostile input driving
-  recursive `Decodable` types.
+- Integers (and doubles that a float 32 holds exactly) encode with the
+  smallest wire format; integers decode from any integer format that fits
+  the requested type; out-of-range numbers (including
+  float64 → `Float` overflow) throw instead of truncating. A float is a
+  type mismatch for an integer type, even when it holds a whole number: the
+  spec deserializes the float formats to its Float type and the int formats
+  to Integer. `Int128`/`UInt128` encode when the value fits in 64 bits and throw
+  `EncodingError.invalidValue` otherwise.
+- `Decimal`, which MessagePack has no type for, goes through its own
+  `Codable` conformance (a map of its fields).
+- The `Encoder`/`Decoder` and containers handed to `encode(to:)` and
+  `init(from:)` are valid only during that `encode`/`decode` call (they
+  refer to state on its stack); conformances must not store them.
+- Duplicate map keys, which the spec leaves to implementations: the value
+  tree and the macro route keep the last entry, while `Codable` (structs and
+  dictionaries alike) looks each key up from the previous match onwards, so
+  a dictionary keeps the first entry.
 
 ### Codable performance
 
 Neither direction materializes a `MessagePackValue` tree:
 
-- **Encoding** streams bytes into a growable buffer in a single pass.
-  Container headers (counts unknown up front) are reserved at full width,
-  counts are accumulated in the reserved bytes themselves, and headers are
-  compacted to the smallest format in one final pass.
-- **Decoding** walks the raw bytes directly. A keyed container scans its
-  entries' byte offsets once and matches coding keys by comparing UTF-8
-  bytes in place (no key `String` allocations), starting each lookup at the
-  previous match so keys requested in wire order cost O(1). Container scans
-  are memoized so a decoded value is never skipped twice.
+- **Encoding** streams bytes straight into the output in a single pass.
+  A container's header (its count unknown up front) is written as a fixmap
+  or fixarray and keeps the running count itself, widening in place to the
+  16- or 32-bit format if the container outgrows it. The output buffer and the encoder's bookkeeping (open
+  containers, coding-path nodes) start in the `encode` call's own stack
+  frame, so a typical message is encoded without allocating any of them.
+- **Decoding** walks the raw bytes directly. A keyed container records its
+  entries' byte offsets and key lengths as it scans, and matches coding keys
+  with a length check and a `memcmp` against the wire bytes (no key
+  `String` allocations), starting each lookup at the previous match so
+  keys requested in wire order cost two comparisons. `decodeIfPresent` looks
+  a key up once instead of the default three times (`contains`,
+  `decodeNil`, `decode`). The scan stops at array and map values until a
+  lookup needs to go past them, and a nested value's end is recorded when
+  it is decoded, so the nested values of a struct are walked once instead
+  of once more by every enclosing map. (A map read through `allKeys`, such
+  as a dictionary of structs, still skips over its values once to find all
+  of its keys.)
 - Values of natively represented types (integers, strings, floats, bools,
   `Date`/`Data`/timestamps) flowing through the generic
   `encode<T>`/`decode<T>` funnels are coded directly, bypassing the
@@ -201,13 +211,19 @@ Neither direction materializes a `MessagePackValue` tree:
   scalar types (`[Int]`, `[String]`, `[Double]`, …) additionally bypass the
   unkeyed-container machinery entirely: a tight loop reads or writes the
   elements against the raw buffer, which puts them at macro-route speed —
-  including when they appear as fields of a decoded struct.
+  including when they appear as fields of a decoded struct. String-keyed
+  dictionaries of strings, integers, doubles, and bools (`[String: Int]`, …)
+  take the same kind of loop. These collection types are recognized by one
+  out-of-line lookup of cached type identifiers, so every other value pays
+  a single call for it.
 - Hot paths avoid allocation: index coding keys build their `stringValue`
-  lazily, coding paths are only materialized for errors and nested
-  containers, decode primitives report failures via typed throws and attach
-  coding-path context only when an error actually propagates, and the
-  encoder's buffer sits behind a pointer to bypass dynamic exclusivity
-  checks.
+  lazily; coding paths are built in constant time per level — on a stack
+  of nodes in the encoder, a linked list (like `JSONDecoder`'s) in the
+  decoder — and turned into `[CodingKey]` only for errors and `codingPath`
+  reads; decode primitives report failures via typed throws and attach
+  coding-path context only when an error actually propagates; and both
+  coders keep their mutable state behind a pointer, bypassing dynamic
+  exclusivity checks.
 
 p50 wall clock, same fixtures as the macro table:
 
@@ -220,10 +236,10 @@ p50 wall clock, same fixtures as the macro table:
 
 ## Design notes
 
-- **Spec compliance**: All format families are supported (fixint, fixmap, fixarray, fixstr, nil, bool, bin 8/16/32, ext 8/16/32, float 32/64, uint/int 8–64, fixext 1–16, str 8/16/32, array 16/32, map 16/32). The reserved byte `0xc1` and invalid UTF-8 in strings are rejected. Timestamps round-trip through `.ext(type: -1, ...)`.
-- **Smallest representation**: As recommended by the spec, integers serialize with the smallest format that represents the value, regardless of the case width (`.int64(5)` encodes as a 1-byte positive fixint). Consequently, deserialization maps each wire format to the narrowest matching case (positive fixint → `.uint8`, negative fixint → `.int8`, `uint 16` → `.uint16`, …); use the `int64Value` / `uint64Value` accessors for width-agnostic reads.
+- **Spec compliance**: All format families are supported (fixint, fixmap, fixarray, fixstr, nil, bool, bin 8/16/32, ext 8/16/32, float 32/64, uint/int 8–64, fixext 1–16, str 8/16/32, array 16/32, map 16/32). The reserved byte `0xc1` and invalid UTF-8 in strings are rejected; as the spec asks, the original bytes of such a string stay readable through `MessagePackReader.readStringBytes()`. Timestamps round-trip through `.ext(type: -1, ...)`.
+- **Smallest representation**: As recommended by the spec, integers serialize with the smallest format that represents the value, regardless of the case width (`.int64(5)` encodes as a 1-byte positive fixint), and a double that a float 32 holds exactly, bit for bit (`1.5`, `-0.0`, the infinities, the default NaN), as a 5-byte float 32 rather than a 9-byte float 64 on every route. Consequently, deserialization maps each wire format to the narrowest matching case (positive fixint → `.uint8`, negative fixint → `.int8`, `uint 16` → `.uint16`, float 32 → `.float32`, …); use the `int64Value` / `uint64Value` / `doubleValue` accessors for width-agnostic reads.
 - **Iterative, not recursive**: Both directions use explicit frame stacks, so deeply nested input can never overflow the call stack. Deserialization enforces a nesting-depth limit (512) as DoS protection; serialization has no depth limit. The innermost container's state is kept in locals on both paths, so flat data never touches the stack arrays.
-- **Single-pass serialization**: One streaming pass into a growable buffer (doubling growth, so a large string/binary payload triggers at most one resize before its bulk copy), handed to `Data` without copying. Length limits (strings/binary/containers beyond 2^32-1) are still validated inline with typed throws.
+- **Single-pass serialization**: One streaming pass into a growable buffer that starts on the stack (doubling growth, so a large string/binary payload triggers at most one resize before its bulk copy); a result that outgrew the stack is handed to `Data` without copying, a smaller one is copied into an exactly sized `Data`. Length limits (strings/binary/containers beyond 2^32-1) are still validated inline with typed throws.
 - **Zero-copy parsing**: The parser walks the raw bytes with unaligned big-endian loads; strings are built via `UTF8Span` (validate once, no revalidation) on OS 26+, falling back to `String(validating:)`. The availability check is resolved once per process, not per string.
 - **Hostile input**: Length claims are checked against remaining input before allocating, so truncated or malicious headers (e.g. "4 GB string follows") fail fast without large allocations.
 
@@ -255,7 +271,7 @@ p50 wall clock:
 | nested objects (500) | 325 µs | 336 µs |
 | binary 1 MB | 27 µs | 21 µs |
 
-Deserialization of a flat scalar array performs 1 allocation (the result array); serialization performs the output buffer's growth chain plus the `Data` wrapper (about 9 allocations for a 10k-int array, independent of element count beyond the doubling).
+Deserialization of a flat scalar array performs 1 allocation (the result array); serialization performs the output buffer's growth chain beyond its first kilobyte on the stack, plus the `Data` wrapper (about 8 allocations for a 10k-int array, independent of element count beyond the doubling; none but the `Data` for a small message).
 
 ## Testing
 
@@ -263,4 +279,4 @@ Deserialization of a flat scalar array performs 1 allocation (the result array);
 swift test
 ```
 
-195 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, and decoding errors), and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
+236 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
