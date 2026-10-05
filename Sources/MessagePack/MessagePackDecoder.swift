@@ -175,6 +175,7 @@ enum MessagePackDecoding {
     /// rejected well before the stack runs out.
     static let maxDepth = 128
 
+    @inline(never)
     static func corrupted(_ error: MessagePackError, _ path: [CodingKey], offset: Int) -> DecodingError {
         .dataCorrupted(
             DecodingError.Context(
@@ -192,6 +193,9 @@ enum MessagePackDecoding {
 
     /// A type-mismatch (or, for a nil wire value, value-not-found) error
     /// describing the format byte actually present at the parser's offset.
+    /// Out of line, like every error builder here: inlined, their messages
+    /// were copied into each decode path.
+    @inline(never)
     static func wrongType(_ type: Any.Type, _ parser: Parser, _ path: [CodingKey]) -> DecodingError {
         guard let format = try? parser.peekFormat() else {
             return corrupted(.insufficientData, path, offset: parser.offset)
@@ -217,6 +221,7 @@ enum MessagePackDecoding {
     /// into a `DecodingError` with full coding-path context. Only reached on
     /// failure, so building the path here keeps the happy path
     /// allocation-free.
+    @inline(never)
     static func decodingError(
         _ failure: MessagePackDecodeFailure, type: Any.Type, parser: Parser, path: [CodingKey]
     ) -> DecodingError {
@@ -241,8 +246,18 @@ enum MessagePackDecoding {
         }
     }
 
-    @inline(__always)
+    /// Out of line: one specialization per integer type, shared by every
+    /// container overload instead of a copy inlined into each of them. The
+    /// `[Int]` fast path loops over ``readIntegerInlined(_:)`` instead.
+    @inline(never)
     static func readInteger<T: FixedWidthInteger>(
+        _ parser: inout Parser
+    ) throws(MessagePackDecodeFailure) -> T {
+        try readIntegerInlined(&parser)
+    }
+
+    @inline(__always)
+    static func readIntegerInlined<T: FixedWidthInteger>(
         _ parser: inout Parser
     ) throws(MessagePackDecodeFailure) -> T {
         let raw: MessagePackRawInteger?
@@ -253,18 +268,21 @@ enum MessagePackDecoding {
         }
         switch raw {
         case .signed(let v):
-            guard let value = T(exactly: v) else {
-                throw .invalid("Number \(v) does not fit in \(T.self)")
-            }
+            guard let value = T(exactly: v) else { throw doesNotFit(v, T.self) }
             return value
         case .unsigned(let v):
-            guard let value = T(exactly: v) else {
-                throw .invalid("Number \(v) does not fit in \(T.self)")
-            }
+            guard let value = T(exactly: v) else { throw doesNotFit(v, T.self) }
             return value
         case nil:
             throw .wrongType
         }
+    }
+
+    /// The failure for a wire number outside the requested type's range. Out
+    /// of line and non-generic, so the message is built in one place.
+    @inline(never)
+    static func doesNotFit(_ number: Any, _ type: Any.Type) -> MessagePackDecodeFailure {
+        .invalid("Number \(number) does not fit in \(type)")
     }
 
     @inline(__always)
@@ -357,6 +375,25 @@ enum MessagePackDecoding {
     @inline(__always)
     private static func isExtFormat(_ format: UInt8) -> Bool {
         (0xd4...0xd8).contains(format) || (0xc7...0xc9).contains(format)
+    }
+
+    /// Reads one scalar at `offset`, attaching the coding path on failure.
+    /// The path closure only runs when an error actually propagates.
+    static func decodeScalar<V>(
+        _ type: V.Type,
+        context: MessagePackDecodingContext,
+        offset: Int,
+        codingPath: @autoclosure () -> [CodingKey],
+        _ read: (inout Parser) throws(MessagePackDecodeFailure) -> V
+    ) throws -> V {
+        var parser = context.parser(at: offset)
+        do throws(MessagePackDecodeFailure) {
+            return try read(&parser)
+        } catch {
+            // Errors point at the value's start.
+            parser.offset = offset
+            throw decodingError(error, type: type, parser: parser, path: codingPath())
+        }
     }
 
     /// Reads one scalar with `read`, rewinding the parser and attaching the
@@ -539,14 +576,7 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         _ type: T.Type,
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T {
-        var parser = context.parser(at: offset)
-        do throws(MessagePackDecodeFailure) {
-            return try read(&parser)
-        } catch {
-            parser.offset = offset
-            throw MessagePackDecoding.decodingError(
-                error, type: type, parser: parser, path: codingPath)
-        }
+        try MessagePackDecoding.decodeScalar(type, context: context, offset: offset, codingPath: codingPath, read)
     }
 
     func decode(_ type: Bool.Type) throws -> Bool {

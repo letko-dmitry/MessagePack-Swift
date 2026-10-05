@@ -164,33 +164,29 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         return parser.readRawNil() ? nil : valueOffset
     }
 
+    // The scalar wrappers stay inline so that each `decode(_:forKey:)`
+    // overload calls a `decodeScalar` specialized for its value type: the
+    // container is generic over `Key`, and as its own methods the helpers
+    // were left unspecialized, passing the type and the read closure at run
+    // time. The read itself is shared by all key types.
+
+    @inline(__always)
     private func decodeScalar<T>(
         _ type: T.Type, forKey key: Key,
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T {
-        try decodeScalar(type, at: try requireOffset(key), forKey: key, read)
+        try MessagePackDecoding.decodeScalar(
+            type, context: context, offset: try requireOffset(key), codingPath: codingPath + [key], read)
     }
 
+    @inline(__always)
     private func decodeScalarIfPresent<T>(
         _ type: T.Type, forKey key: Key,
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T? {
         guard let valueOffset = presentValueOffset(key) else { return nil }
-        return try decodeScalar(type, at: valueOffset, forKey: key, read)
-    }
-
-    private func decodeScalar<T>(
-        _ type: T.Type, at valueOffset: Int, forKey key: Key,
-        _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
-    ) throws -> T {
-        var parser = context.parser(at: valueOffset)
-        do throws(MessagePackDecodeFailure) {
-            return try read(&parser)
-        } catch {
-            parser.offset = valueOffset
-            throw MessagePackDecoding.decodingError(
-                error, type: type, parser: parser, path: codingPath + [key])
-        }
+        return try MessagePackDecoding.decodeScalar(
+            type, context: context, offset: valueOffset, codingPath: codingPath + [key], read)
     }
 
     func decode(_ type: Bool.Type, forKey key: Key) throws -> Bool {
