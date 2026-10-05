@@ -145,10 +145,12 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         _ type: T.Type, forKey key: Key,
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T {
-        var parser = context.parser(at: try requireOffset(key))
+        let valueOffset = try requireOffset(key)
+        var parser = context.parser(at: valueOffset)
         do throws(MessagePackDecodeFailure) {
             return try read(&parser)
         } catch {
+            parser.offset = valueOffset
             throw MessagePackDecoding.decodingError(
                 error, type: type, parser: parser, path: codingPath + [key])
         }
