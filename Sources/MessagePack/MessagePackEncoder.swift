@@ -269,12 +269,12 @@ final class MessagePackEncoderImpl {
                                 "Date (timeIntervalSince1970: \(date.timeIntervalSince1970)) cannot be represented as a MessagePack timestamp"
                         ))
                 }
-                state.pointee.buffer.writeExt(type: MessagePackTimestamp.extType, data: timestamp.data)
+                state.pointee.buffer.writeTimestamp(timestamp)
             } else if T.self == Data.self {
                 state.pointee.buffer.writeBinary(raw.assumingMemoryBound(to: Data.self).pointee)
             } else if T.self == MessagePackTimestamp.self {
                 let timestamp = raw.assumingMemoryBound(to: MessagePackTimestamp.self).pointee
-                state.pointee.buffer.writeExt(type: MessagePackTimestamp.extType, data: timestamp.data)
+                state.pointee.buffer.writeTimestamp(timestamp)
             } else if decimalEncodingStrategy == .convertToString, T.self == Decimal.self {
                 // The strategy is checked first: `Decimal.self` costs a call
                 // to Foundation's metadata accessor.

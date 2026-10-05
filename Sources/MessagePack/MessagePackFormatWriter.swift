@@ -183,6 +183,28 @@ extension MessagePackFormatSink {
         }
     }
 
+    /// Writes a timestamp as the spec's ext type -1 in its smallest layout,
+    /// straight from its fields rather than through a `Data` payload.
+    @inlinable
+    mutating func writeTimestamp(_ timestamp: MessagePackTimestamp) {
+        switch timestamp.layout {
+        case .bits32(let payload):
+            writeByte(0xd6)  // fixext 4
+            writeByte(0xff)
+            writeBigEndian(payload)
+        case .bits64(let payload):
+            writeByte(0xd7)  // fixext 8
+            writeByte(0xff)
+            writeBigEndian(payload)
+        case .bits96(let nanoseconds, let seconds):
+            writeByte(0xc7)  // ext 8
+            writeByte(12)
+            writeByte(0xff)
+            writeBigEndian(nanoseconds)
+            writeBigEndian(seconds)
+        }
+    }
+
     @inlinable
     @inline(__always)
     mutating func writeExt(type: Int8, data d: Data) {

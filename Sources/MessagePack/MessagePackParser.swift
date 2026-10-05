@@ -484,6 +484,16 @@ extension MessagePackSerializer.Parser {
     @inlinable
     @inline(__always)
     mutating func readRawExt() throws(MessagePackError) -> (type: Int8, data: Data)? {
+        guard let ext = try readRawExtBytes() else { return nil }
+        return (ext.type, Data(ext.bytes))
+    }
+
+    /// Reads any ext format and returns its type and raw payload (not copied;
+    /// only valid while the input buffer is), or rewinds and returns `nil` if
+    /// the next value is not an extension.
+    @inlinable
+    @inline(__always)
+    mutating func readRawExtBytes() throws(MessagePackError) -> (type: Int8, bytes: UnsafeRawBufferPointer)? {
         let start = offset
         let format = try readFormatByte()
         let length: Int
@@ -501,7 +511,10 @@ extension MessagePackSerializer.Parser {
             return nil
         }
         let type = Int8(bitPattern: try readBigEndian(UInt8.self))
-        return (type, try readData(length: length))
+        guard count - offset >= length, let base else { throw MessagePackError.insufficientData }
+        let bytes = UnsafeRawBufferPointer(start: base + offset, count: length)
+        offset += length
+        return (type, bytes)
     }
 
     /// Reads an array header and returns the element count, or rewinds and
