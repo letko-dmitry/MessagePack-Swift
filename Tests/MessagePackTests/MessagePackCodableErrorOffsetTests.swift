@@ -88,6 +88,10 @@ struct CodableDecodingErrorOffsetTests {
             var a: [Int]
         }
 
+        struct Counts: Decodable {
+            var a: [String: Int]
+        }
+
         /// Arrays nested in arrays, as deep as the input goes.
         struct Deep: Decodable {
             init(from decoder: Decoder) throws {
@@ -113,14 +117,13 @@ struct CodableDecodingErrorOffsetTests {
         let leaves = Array("leaves".utf8)
         let list = Array("list".utf8)
         // Each case fails at a different place in the decoder, at the value
-        // the error's coding path names. A keyed container checks its whole
-        // map when it is created, so corrupt data anywhere in a map points
-        // at the map.
+        // the error's coding path names.
         let cases: [(name: String, bytes: [UInt8], decode: (Data) throws -> Void, offset: Int, path: [String])] = [
             ("trailing bytes", [0x01, 0x02], decoding(Int.self), 1, []),
             ("truncated map header", [0x91, 0xde, 0x00], decoding([Leaf].self), 1, ["#0"]),
             ("map count past the end", [0x91, 0xde, 0xff, 0xff], decoding([Leaf].self), 1, ["#0"]),
-            ("truncated array in a map", [0x81, 0xa6] + leaves + [0xdd, 0x00], decoding(Branch.self), 0, []),
+            ("truncated array in a map", [0x81, 0xa6] + leaves + [0xdd, 0x00], decoding(Branch.self), 8, ["leaves"]),
+            ("array count past the end in a map", [0x81, 0xa6] + leaves + [0xdc, 0xff, 0xff], decoding(Branch.self), 8, ["leaves"]),
             (
                 "depth limit", [UInt8](repeating: 0x91, count: 129) + [0x90], decoding(Deep.self), 128,
                 Array(repeating: "#0", count: 128)
@@ -132,7 +135,11 @@ struct CodableDecodingErrorOffsetTests {
                 decoding([Leaf].self), 1, ["#0"]
             ),
             ("[Int] count past the end", [0x91, 0xdc, 0xff, 0xff], decoding([[Int]].self), 1, ["#0"]),
-            ("[Int] count past the end in a map", [0x81, 0xa1, 0x61, 0xdc, 0xff, 0xff], decoding(Ints.self), 0, []),
+            ("[Int] count past the end in a map", [0x81, 0xa1, 0x61, 0xdc, 0xff, 0xff], decoding(Ints.self), 3, ["a"]),
+            ("truncated [Int] header in a map", [0x81, 0xa1, 0x61, 0xdc, 0x00], decoding(Ints.self), 3, ["a"]),
+            ("truncated [String: Int] header", [0x81, 0xa1, 0x61, 0xde, 0x00], decoding(Counts.self), 3, ["a"]),
+            ("[String: Int] count past the end", [0x81, 0xa1, 0x61, 0xde, 0xff, 0xff], decoding(Counts.self), 3, ["a"]),
+            ("truncated [String: Int] key", [0x81, 0xa1, 0x61, 0x81, 0xa5, 0x62], decoding(Counts.self), 3, ["a"]),
             ("truncated [String] element", [0x92, 0xa1, 0x61, 0xa3, 0x62], decoding([String].self), 3, ["#1"]),
         ]
 

@@ -4,9 +4,9 @@ import Foundation
 /// `JSONDecoder`.
 ///
 /// Decoding operates directly on the raw bytes without materializing a
-/// ``MessagePackValue`` tree: keyed containers pre-scan their entries' byte
-/// offsets once (using the shared skip logic in the parser) and match keys by
-/// comparing UTF-8 bytes in place, and unkeyed containers stream through
+/// ``MessagePackValue`` tree: keyed containers scan their entries' byte
+/// offsets lazily (using the shared skip logic in the parser) and match keys
+/// by comparing UTF-8 bytes in place, and unkeyed containers stream through
 /// their elements.
 ///
 /// Special types:
@@ -112,16 +112,27 @@ struct MessagePackDecodingContext {
         let userInfo: [CodingUserInfoKey: Any]
         let decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
 
-        /// Memo of the most recently completed container traversal: a keyed
-        /// container's creation scan (or an unkeyed container decoding its
-        /// last element) already establishes where the value starting at
-        /// `memoStart` ends, letting
-        /// ``MessagePackDecoding/unwrap(_:parser:context:path:)`` advance
-        /// past a decoded value without skipping it a second time. A stale
-        /// memo is harmless: byte offsets uniquely identify values, so a
-        /// matching `memoStart` always implies the same `memoEnd`.
+        /// Memo of the most recently completed value whose end no keyed
+        /// storage tracks: an unkeyed container that decoded its last
+        /// element, or a value decoded through a single-value container
+        /// (`Optional` and other wrappers). It lets
+        /// ``MessagePackDecoding/unwrap(_:parser:context:path:)`` advance past
+        /// the value starting at `memoStart` without skipping it a second
+        /// time. A stale memo is harmless: byte offsets uniquely identify
+        /// values, so a matching `memoStart` always implies the same
+        /// `memoEnd`.
         var memoStart = -1
         var memoEnd = -1
+
+        /// The value ``MessagePackDecoding/unwrap(_:parser:context:path:)``
+        /// is decoding through its `Decodable` conformance, and the storage
+        /// of the map that value opened, if any. Nested decodes save and
+        /// restore both, so once `init(from:)` returns they describe the
+        /// value itself, however many nested maps it opened, and its end is
+        /// found by finishing that map's lazy scan instead of skipping the
+        /// whole value.
+        var decodingOffset = -1
+        var decodingStorage: MessagePackKeyedStorage?
 
         /// Recycled keyed-container storages. Decoding a homogeneous array
         /// of structs otherwise allocates a fresh storage object plus its
@@ -150,11 +161,13 @@ struct MessagePackDecodingContext {
                 return state.pointee.storagePool[index]
             }
         }
-        let storage = MessagePackKeyedStorage()
+
+        let storage = MessagePackKeyedStorage.make()
         let poolLimit = 8
         if state.pointee.storagePool.count < poolLimit {
             state.pointee.storagePool.append(storage)
         }
+
         return storage
     }
 
@@ -193,6 +206,8 @@ enum MessagePackDecoding {
     /// rejected well before the stack runs out.
     static let maxDepth = 128
 
+    /// `offset` is where the bytes the error is about start: the value its
+    /// coding path names, or the trailing bytes after the top-level value.
     @inline(never)
     static func corrupted(_ error: MessagePackError, _ path: MessagePackCodingPath, offset: Int) -> DecodingError {
         .dataCorrupted(
@@ -210,9 +225,11 @@ enum MessagePackDecoding {
     }
 
     /// A type-mismatch (or, for a nil wire value, value-not-found) error
-    /// describing the format byte actually present at the parser's offset.
-    /// Out of line, like every error builder here: inlined, their messages
-    /// were copied into each decode path.
+    /// describing the format byte actually present. Out of line, like every
+    /// error builder here: inlined, their messages were copied into each
+    /// decode path. The builders take the coding path as it is stored and
+    /// build its array of keys themselves, so that code stays off the
+    /// decode paths too.
     @inline(never)
     static func wrongType(_ type: Any.Type, _ parser: Parser, _ path: MessagePackCodingPath) -> DecodingError {
         guard let format = try? parser.peekFormat() else {
@@ -235,10 +252,9 @@ enum MessagePackDecoding {
             ))
     }
 
-    /// Translates a primitive failure, with the parser at the value's start,
-    /// into a `DecodingError` with full coding-path context. Only reached on
-    /// failure, so building the path here keeps the happy path
-    /// allocation-free.
+    /// Translates a primitive failure into a `DecodingError` with full
+    /// coding-path context. Only reached on failure, so building the path
+    /// here keeps the happy path allocation-free.
     @inline(never)
     static func decodingError(
         _ failure: MessagePackDecodeFailure, type: Any.Type, parser: Parser, path: MessagePackCodingPath
@@ -255,18 +271,19 @@ enum MessagePackDecoding {
     }
 
     @inline(__always)
-    static func skip(_ parser: inout Parser, path: @autoclosure () -> MessagePackCodingPath) throws {
+    static func skip(_ parser: inout Parser, path: MessagePackCodingPath) throws {
         let startOffset = parser.offset
         do throws(MessagePackError) {
             try parser.skipValue()
         } catch {
-            throw corrupted(error, path(), offset: startOffset)
+            throw corrupted(error, path, offset: startOffset)
         }
     }
 
     /// Out of line: one specialization per integer type, shared by every
-    /// container overload instead of a copy inlined into each of them. The
-    /// `[Int]` fast path loops over ``readIntegerInlined(_:)`` instead.
+    /// container overload (inlined into each of them, it was about 45 KB of
+    /// code). The `[Int]` and `[String: Int]` fast paths loop over
+    /// ``readIntegerInlined(_:)`` instead.
     @inline(never)
     static func readInteger<T: FixedWidthInteger>(
         _ parser: inout Parser
@@ -278,12 +295,15 @@ enum MessagePackDecoding {
     static func readIntegerInlined<T: FixedWidthInteger>(
         _ parser: inout Parser
     ) throws(MessagePackDecodeFailure) -> T {
-        let raw: MessagePackRawInteger?
+        let integer: MessagePackRawInteger?
         do throws(MessagePackError) {
-            raw = try parser.readRawInteger()
+            integer = try parser.readRawInteger()
         } catch {
             throw .corrupted(error)
         }
+
+        guard let raw = integer else { throw .wrongType }
+
         switch raw {
         case .signed(let v):
             guard let value = T(exactly: v) else { throw doesNotFit(v, T.self) }
@@ -291,8 +311,6 @@ enum MessagePackDecoding {
         case .unsigned(let v):
             guard let value = T(exactly: v) else { throw doesNotFit(v, T.self) }
             return value
-        case nil:
-            throw .wrongType
         }
     }
 
@@ -346,7 +364,7 @@ enum MessagePackDecoding {
         // A finite float64 must stay finite as Float; JSONDecoder likewise
         // rejects numbers that do not fit the requested type.
         if narrowed.isInfinite && value.isFinite {
-            throw .invalid("Number \(value) does not fit in Float")
+            throw doesNotFit(value, Float.self)
         }
         return narrowed
     }
@@ -405,10 +423,11 @@ enum MessagePackDecoding {
         _ read: (inout Parser) throws(MessagePackDecodeFailure) -> V
     ) throws -> V {
         var parser = context.parser(at: offset)
+
         do throws(MessagePackDecodeFailure) {
             return try read(&parser)
         } catch {
-            // Errors point at the value's start.
+            // Errors point at the value's start, as on the other routes.
             parser.offset = offset
             throw decodingError(error, type: type, parser: parser, path: path())
         }
@@ -480,6 +499,7 @@ enum MessagePackDecoding {
         if ObjectIdentifier(T.self) == foundation.decimal, context.state.pointee.decimalDecodingStrategy != .deferredToDecimal {
             return try decodeDecimal(parser: &parser, context: context, path: path) as! T
         }
+
         return try decodeWithContainers(type, parser: &parser, context: context, path: path())
     }
 
@@ -492,14 +512,32 @@ enum MessagePackDecoding {
         path: MessagePackCodingPath
     ) throws -> T {
         let startOffset = parser.offset
-        let impl = MessagePackDecoderImpl(
-            context: context, offset: startOffset, path: path)
+        let impl = MessagePackDecoderImpl(context: context, offset: startOffset, path: path)
+
+        let state = context.state
+        let outerOffset = state.pointee.decodingOffset
+        let outerStorage = state.pointee.decodingStorage
+        state.pointee.decodingOffset = startOffset
+        state.pointee.decodingStorage = nil
+        defer {
+            state.pointee.decodingOffset = outerOffset
+            state.pointee.decodingStorage = outerStorage
+        }
+
         let value = try type.init(from: impl)
-        if context.state.pointee.memoStart == startOffset {
-            parser.offset = context.state.pointee.memoEnd
+
+        if let storage = state.pointee.decodingStorage {
+            do throws(MessagePackError) {
+                parser.offset = try storage.end(context)
+            } catch {
+                throw corrupted(error, path, offset: startOffset)
+            }
+        } else if state.pointee.memoStart == startOffset {
+            parser.offset = state.pointee.memoEnd
         } else {
             try skip(&parser, path: path)
         }
+
         return value
     }
 }
@@ -520,9 +558,9 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
     var userInfo: [CodingUserInfoKey: Any] { context.userInfo }
 
     /// Guards against unbounded recursion through recursive `Decodable`
-    /// types fed deeply nested hostile input. Every nesting level extends the
-    /// path, so its depth tracks the container depth (mirroring the
-    /// serializer's `maxDepth` protection).
+    /// types fed deeply nested hostile input. Every nesting level appends to
+    /// the coding path, so its depth tracks the container depth (mirroring
+    /// the serializer's `maxDepth` protection).
     private func checkDepth() throws {
         guard path.depth < MessagePackDecoding.maxDepth else {
             throw MessagePackDecoding.corrupted(.depthLimitExceeded, path, offset: offset)
@@ -547,18 +585,14 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
             throw MessagePackDecoding.corrupted(.insufficientData, path, offset: offset)
         }
         let storage = context.borrowKeyedStorage()
-        do throws(MessagePackError) {
-            try storage.scan(entryCount: entryCount, parser: &parser)
-        } catch {
-            throw MessagePackDecoding.corrupted(error, path, offset: offset)
+        storage.reset(firstKeyOffset: parser.offset, entryCount: entryCount)
+        if context.state.pointee.decodingOffset == offset {
+            context.state.pointee.decodingStorage = storage
         }
-        // The scan just found this map's end; remember it so `unwrap` does
-        // not have to skip the map again.
-        context.state.pointee.memoStart = offset
-        context.state.pointee.memoEnd = parser.offset
+
         return KeyedDecodingContainer(
             MessagePackKeyedDecodingContainer<Key>(
-                context: context, storage: storage, path: path))
+                context: context, storage: storage, offset: offset, path: path))
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
@@ -634,8 +668,16 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
 
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
         var parser = context.parser(at: offset)
-        return try MessagePackDecoding.unwrap(
+        let value = try MessagePackDecoding.unwrap(
             type, parser: &parser, context: context, path: path)
+
+        // This decoder's own value ends where the one it wraps does. The
+        // `unwrap` that created this decoder (for `Optional` and other
+        // single-value wrappers) would otherwise skip the value again.
+        context.state.pointee.memoStart = offset
+        context.state.pointee.memoEnd = parser.offset
+
+        return value
     }
 }
 
