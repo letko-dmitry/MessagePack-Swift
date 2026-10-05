@@ -107,36 +107,6 @@ struct MessagePackEncoderState {
     /// The nodes of the coding paths in use; see ``MessagePackEncodingPath``.
     var pathNodes: MessagePackStack<MessagePackEncodingPath.Node>
 
-    /// Per-`_MessagePackEncoder` record of the container it created, so
-    /// repeated `container(keyedBy:)` / `unkeyedContainer()` calls on the
-    /// same encoder merge into one container instead of emitting siblings,
-    /// and so encoding a second value for the same slot is detected.
-    /// `0` = none; `position + 1` = keyed; `-(position + 1)` = unkeyed;
-    /// `singleValueWrittenMarker` = a single value was already written.
-    var encoderSlots: [Int] = []
-
-    /// Slot marker meaning "a single value was already encoded for this
-    /// encoder" (distinct from any container position encoding).
-    static let singleValueWrittenMarker = Int.min
-
-    @inline(__always)
-    mutating func makeEncoderSlot() -> Int {
-        encoderSlots.append(0)
-        return encoderSlots.count - 1
-    }
-
-    /// Records that the encoder's single value was written; traps if a
-    /// value or container was already encoded for it, mirroring
-    /// `JSONEncoder`'s precondition for the same misuse.
-    @inline(__always)
-    mutating func markSingleValueWritten(id: Int) {
-        precondition(
-            encoderSlots[id] == 0,
-            "Attempt to encode a second value (or a value after a container) through a single value encoding container"
-        )
-        encoderSlots[id] = Self.singleValueWrittenMarker
-    }
-
     /// Registers one new entry in the container at `position`, closing any
     /// nested containers opened after it. Returns false if that container
     /// itself has already been closed (out-of-order write).
@@ -378,13 +348,46 @@ struct MessagePackEncoderImpl {
 
     /// Encodes a value through its `Encodable` conformance.
     func encodeWithContainers<T: Encodable>(_ value: T, path: MessagePackEncodingPath) throws {
-        let before = state.pointee.buffer.offset
-        try value.encode(to: _MessagePackEncoder(impl: self, path: path))
+        let start = state.pointee.buffer.offset
+        try value.encode(to: _MessagePackEncoder(impl: self, path: path, start: start))
+
         // MessagePack has no representation for "no value at all";
         // JSONEncoder throws in the same situation.
-        guard state.pointee.buffer.offset != before else {
+        guard state.pointee.buffer.offset != start else {
             throw Self.nothingEncoded(value, type: T.self, codingPath: codingPath(path))
         }
+
+        // The value is complete, so are its containers: closing them here
+        // lets the parent's next entry find its container on top, and turns
+        // any later write into them into an out-of-order write.
+        closeContainers(from: start)
+    }
+
+    /// Closes the containers whose headers are at `position` or after it.
+    @inline(__always)
+    func closeContainers(from position: Int) {
+        while let top = state.pointee.openContainers.last, top >= position {
+            state.pointee.openContainers.removeLast()
+        }
+    }
+
+    /// Checks a repeated container request for the value starting at
+    /// `position`, whose container is reused (`JSONEncoder` merges repeated
+    /// requests too). Traps unless that container is still open and of the
+    /// requested kind: anything else at `position` is a value already
+    /// encoded through a single value container, or a container closed
+    /// when its value was done.
+    @inline(never)
+    func checkReusedContainer(at position: Int, isMap: Bool) {
+        precondition(
+            state.pointee.openContainers.lastIndex(where: { $0 == position }) != nil,
+            "Attempt to request an encoding container for a value that is already encoded"
+        )
+        let existingIsMap = state.pointee.buffer.isMapHeader(at: position)
+        precondition(
+            existingIsMap == isMap,
+            "Attempt to request a \(isMap ? "keyed" : "unkeyed") encoding container for a value that already requested a \(existingIsMap ? "keyed" : "unkeyed") one"
+        )
     }
 
     // The errors are built out of line, keeping their messages and the
@@ -417,45 +420,29 @@ struct MessagePackEncoderImpl {
 // MARK: - Encoder
 
 /// The `Encoder` handed to `Encodable.encode(to:)`. A three-word struct
-/// (shared state + coding path + slot id) so passing it as an existential
-/// does not allocate.
+/// (shared state, coding path, start), so passing it as an existential does
+/// not allocate.
 struct _MessagePackEncoder: Encoder {
     let impl: MessagePackEncoderImpl
     let path: MessagePackEncodingPath
-    /// Index into `MessagePackEncoderState.encoderSlots`, used to merge
-    /// repeated container requests for the same value.
-    let id: Int
-
-    init(impl: MessagePackEncoderImpl, path: MessagePackEncodingPath) {
-        self.impl = impl
-        self.path = path
-        self.id = impl.state.pointee.makeEncoderSlot()
-    }
+    /// Where the value of this encoder starts in the output. A value is one
+    /// single value or one container whose header is written at `start`, so
+    /// what the output holds there tells what has been encoded for it: no
+    /// per-encoder record is needed.
+    let start: Int
 
     var codingPath: [CodingKey] { impl.codingPath(path) }
 
     var userInfo: [CodingUserInfoKey: Any] { impl.userInfo }
 
-    /// Returns the header position for this value's container, creating it
-    /// on first request and reusing it on repeated requests (matching
-    /// `JSONEncoder`, which merges repeated same-kind container requests).
+    /// The header position of this value's container: opened at `start` on
+    /// the first request, and the same one on later requests.
     private func containerPosition(isMap: Bool) -> Int {
-        let slot = impl.state.pointee.encoderSlots[id]
-        if slot == 0 {
-            let position = impl.beginContainer(isMap: isMap)
-            impl.state.pointee.encoderSlots[id] = isMap ? position + 1 : -(position + 1)
-            return position
+        if impl.state.pointee.buffer.offset == start {
+            return impl.beginContainer(isMap: isMap)
         }
-        precondition(
-            slot != MessagePackEncoderState.singleValueWrittenMarker,
-            "Attempt to request an encoding container after a single value was already encoded for the same value"
-        )
-        let existingIsMap = slot > 0
-        precondition(
-            existingIsMap == isMap,
-            "Attempt to request a \(isMap ? "keyed" : "unkeyed") encoding container for a value that already requested a \(existingIsMap ? "keyed" : "unkeyed") one"
-        )
-        return existingIsMap ? slot - 1 : -slot - 1
+        impl.checkReusedContainer(at: start, isMap: isMap)
+        return start
     }
 
     func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
@@ -477,7 +464,7 @@ struct _MessagePackEncoder: Encoder {
     }
 
     func singleValueContainer() -> SingleValueEncodingContainer {
-        MessagePackSingleValueEncodingContainer(impl: impl, path: path, encoderID: id)
+        MessagePackSingleValueEncodingContainer(impl: impl, path: path, start: start)
     }
 }
 

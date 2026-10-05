@@ -69,3 +69,15 @@ struct MessagePackStack<Element> {
     }
 }
 
+extension MessagePackStack {
+    func lastIndex(where predicate: (Element) -> Bool) -> Int? {
+        var index = count
+        while index > 0 {
+            index &-= 1
+            if predicate(base[index]) {
+                return index
+            }
+        }
+        return nil
+    }
+}
