@@ -188,113 +188,106 @@ final class MessagePackEncoderImpl {
     /// container machinery (and its per-value encoder and coding-path
     /// allocations); the path closure only runs when a value actually needs
     /// it (nested encoders and errors).
-    ///
-    /// Native types are matched by metadata equality and then read through
-    /// one shared pointer to `value`. Two alternatives measured worse:
-    /// `as!` in every branch makes the compiler reserve a dynamically sized
-    /// stack temporary per cast site in the entry block, probing the stack
-    /// (`chkstk`) 22 times on every call (~7% of encoding time); a single
-    /// conditional cast to an internal protocol replaces that with
-    /// `swift_conformsToProtocol` plus existential `tryCast`, which is
-    /// slower than this whole chain of pointer-equality checks.
     func encodeEncodable<T: Encodable>(
         _ value: T, codingPath: @autoclosure () -> [CodingKey]
     ) throws {
-        try withUnsafePointer(to: value) { pointer in
-            let raw = UnsafeRawPointer(pointer)
-            if T.self == String.self {
-                state.pointee.buffer.writeString(raw.assumingMemoryBound(to: String.self).pointee)
-            } else if T.self == Int.self {
-                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int.self).pointee))
-            } else if T.self == Bool.self {
-                state.pointee.buffer.writeBool(raw.assumingMemoryBound(to: Bool.self).pointee)
-            } else if T.self == Double.self {
-                state.pointee.buffer.writeDouble(raw.assumingMemoryBound(to: Double.self).pointee)
-            } else if T.self == Float.self {
-                state.pointee.buffer.writeFloat(raw.assumingMemoryBound(to: Float.self).pointee)
-            } else if T.self == Int64.self {
-                state.pointee.buffer.writeInt(raw.assumingMemoryBound(to: Int64.self).pointee)
-            } else if T.self == UInt64.self {
-                state.pointee.buffer.writeUInt(raw.assumingMemoryBound(to: UInt64.self).pointee)
-            } else if T.self == Int32.self {
-                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int32.self).pointee))
-            } else if T.self == UInt32.self {
-                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt32.self).pointee))
-            } else if T.self == Int16.self {
-                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int16.self).pointee))
-            } else if T.self == UInt16.self {
-                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt16.self).pointee))
-            } else if T.self == Int8.self {
-                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int8.self).pointee))
-            } else if T.self == UInt8.self {
-                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt8.self).pointee))
-            } else if T.self == UInt.self {
-                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt.self).pointee))
-            } else if T.self == [Int].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int].self).pointee) { $0.writeInt(Int64($1)) }
-            } else if T.self == [String].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [String].self).pointee) { $0.writeString($1) }
-            } else if T.self == [Double].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Double].self).pointee) { $0.writeDouble($1) }
-            } else if T.self == [Bool].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Bool].self).pointee) { $0.writeBool($1) }
-            } else if T.self == [Float].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Float].self).pointee) { $0.writeFloat($1) }
-            } else if T.self == [Int64].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int64].self).pointee) { $0.writeInt($1) }
-            } else if T.self == [UInt64].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt64].self).pointee) { $0.writeUInt($1) }
-            } else if T.self == [Int32].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int32].self).pointee) { $0.writeInt(Int64($1)) }
-            } else if T.self == [UInt32].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt32].self).pointee) { $0.writeUInt(UInt64($1)) }
-            } else if T.self == [Int16].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int16].self).pointee) { $0.writeInt(Int64($1)) }
-            } else if T.self == [UInt16].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt16].self).pointee) { $0.writeUInt(UInt64($1)) }
-            } else if T.self == [Int8].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int8].self).pointee) { $0.writeInt(Int64($1)) }
-            } else if T.self == [UInt8].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt8].self).pointee) { $0.writeUInt(UInt64($1)) }
-            } else if T.self == [UInt].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt].self).pointee) { $0.writeUInt(UInt64($1)) }
-            } else if T.self == Date.self {
-                let date = raw.assumingMemoryBound(to: Date.self).pointee
-                guard let timestamp = MessagePackTimestamp(exactly: date) else {
-                    throw EncodingError.invalidValue(
-                        value,
-                        EncodingError.Context(
-                            codingPath: codingPath(),
-                            debugDescription:
-                                "Date (timeIntervalSince1970: \(date.timeIntervalSince1970)) cannot be represented as a MessagePack timestamp"
-                        ))
-                }
-                state.pointee.buffer.writeTimestamp(timestamp)
-            } else if T.self == Data.self {
-                state.pointee.buffer.writeBinary(raw.assumingMemoryBound(to: Data.self).pointee)
-            } else if T.self == MessagePackTimestamp.self {
-                let timestamp = raw.assumingMemoryBound(to: MessagePackTimestamp.self).pointee
-                state.pointee.buffer.writeTimestamp(timestamp)
-            } else if decimalEncodingStrategy == .convertToString, T.self == Decimal.self {
-                // The strategy is checked first: `Decimal.self` costs a call
-                // to Foundation's metadata accessor.
-                encodeDecimal(raw)
-            } else {
-                let path = codingPath()
-                let before = state.pointee.buffer.offset
-                try value.encode(to: _MessagePackEncoder(impl: self, codingPath: path))
-                if state.pointee.buffer.offset == before {
-                    // MessagePack has no representation for "no value at all";
-                    // JSONEncoder throws in the same situation.
-                    throw EncodingError.invalidValue(
-                        value,
-                        EncodingError.Context(
-                            codingPath: path,
-                            debugDescription: "Value of type \(T.self) did not encode any values"
-                        ))
-                }
-            }
+        switch withUnsafePointer(to: value, { encodeNative(T.self, UnsafeRawPointer($0)) }) {
+        case .encoded:
+            return
+        case .notNative:
+            try encodeWithContainers(value, codingPath: codingPath())
+        case .unrepresentableDate:
+            throw Self.unrepresentableDate(value, codingPath: codingPath())
         }
+    }
+
+    /// What ``encodeNative(_:_:)`` did with a value.
+    enum NativeEncoding {
+        case encoded
+        /// The type is not natively represented, or is a `Decimal` deferring
+        /// to its own conformance.
+        case notNative
+        /// A `Date` outside the timestamp range.
+        case unrepresentableDate
+    }
+
+    /// Writes the value at `value` if its type is natively represented.
+    ///
+    /// Out of line and not generic: one copy of the type checks, and no
+    /// resilient `Date` or `Decimal` in the generic `encodeEncodable`, which
+    /// would otherwise size its frame (and probe the stack) on every call.
+    /// Types are matched by metadata identity and read through the raw
+    /// pointer: an `as!` per type reserves a stack temporary per cast site
+    /// (measured at ~7% of encoding time in `chkstk` probes), and a
+    /// conditional cast to a protocol costs `swift_conformsToProtocol`, more
+    /// than this whole chain of comparisons.
+    @inline(never)
+    func encodeNative(_ type: Any.Type, _ value: UnsafeRawPointer) -> NativeEncoding {
+        let foundation = MessagePackFoundationTypes.shared
+        let type = ObjectIdentifier(type)
+
+        // The types seen most in generic contexts first: every struct passes
+        // all of these checks before its own conformance runs.
+        if type == ObjectIdentifier(String.self) {
+            state.pointee.buffer.writeString(value.assumingMemoryBound(to: String.self).pointee)
+        } else if type == foundation.data {
+            state.pointee.buffer.writeBinary(value.assumingMemoryBound(to: Data.self).pointee)
+        } else if type == ObjectIdentifier(Int.self) {
+            state.pointee.buffer.writeInt(Int64(value.load(as: Int.self)))
+        } else if type == foundation.date {
+            guard encodeDate(value) else {
+                return .unrepresentableDate
+            }
+        } else if type == ObjectIdentifier(Double.self) {
+            state.pointee.buffer.writeDouble(value.load(as: Double.self))
+        } else if type == ObjectIdentifier(Bool.self) {
+            state.pointee.buffer.writeBool(value.load(as: Bool.self))
+        } else if type == ObjectIdentifier(Float.self) {
+            state.pointee.buffer.writeFloat(value.load(as: Float.self))
+        } else if type == ObjectIdentifier(Int64.self) {
+            state.pointee.buffer.writeInt(value.load(as: Int64.self))
+        } else if type == ObjectIdentifier(UInt64.self) {
+            state.pointee.buffer.writeUInt(value.load(as: UInt64.self))
+        } else if type == ObjectIdentifier(Int32.self) {
+            state.pointee.buffer.writeInt(Int64(value.load(as: Int32.self)))
+        } else if type == ObjectIdentifier(UInt32.self) {
+            state.pointee.buffer.writeUInt(UInt64(value.load(as: UInt32.self)))
+        } else if type == ObjectIdentifier(Int16.self) {
+            state.pointee.buffer.writeInt(Int64(value.load(as: Int16.self)))
+        } else if type == ObjectIdentifier(UInt16.self) {
+            state.pointee.buffer.writeUInt(UInt64(value.load(as: UInt16.self)))
+        } else if type == ObjectIdentifier(Int8.self) {
+            state.pointee.buffer.writeInt(Int64(value.load(as: Int8.self)))
+        } else if type == ObjectIdentifier(UInt8.self) {
+            state.pointee.buffer.writeUInt(UInt64(value.load(as: UInt8.self)))
+        } else if type == ObjectIdentifier(UInt.self) {
+            state.pointee.buffer.writeUInt(UInt64(value.load(as: UInt.self)))
+        } else if type == ObjectIdentifier(MessagePackTimestamp.self) {
+            state.pointee.buffer.writeTimestamp(value.load(as: MessagePackTimestamp.self))
+        } else if let collectionType = MessagePackCollectionType(type) {
+            encodeCollection(collectionType, value)
+        } else if type == foundation.decimal, decimalEncodingStrategy == .convertToString {
+            encodeDecimal(value)
+        } else {
+            return .notNative
+        }
+
+        return .encoded
+    }
+
+    // `Date` and `Decimal` are written out of line, keeping these resilient
+    // types out of the frame of `encodeNative`, which every struct passes
+    // through: in it, they made each call probe the stack (`chkstk`).
+
+    /// Writes the `Date` at `value`, or returns false if the timestamp range
+    /// cannot hold it.
+    @inline(never)
+    private func encodeDate(_ value: UnsafeRawPointer) -> Bool {
+        guard let timestamp = MessagePackTimestamp(exactly: value.load(as: Date.self)) else {
+            return false
+        }
+        state.pointee.buffer.writeTimestamp(timestamp)
+        return true
     }
 
     /// Writes the `Decimal` at `value` as a string of its exact digits.
@@ -303,20 +296,40 @@ final class MessagePackEncoderImpl {
         state.pointee.buffer.writeString(value.assumingMemoryBound(to: Decimal.self).pointee.description)
     }
 
-    /// Writes an array of a natively represented element type with a tight
-    /// loop, bypassing the unkeyed-container machinery. The count is known up
-    /// front, so the header is written at its final width directly — no
-    /// reserved header to compact in `finalize()`.
-    @inline(__always)
-    private func encodePrimitiveArray<E>(
-        _ array: [E], _ write: (inout MessagePackScratchBuffer, E) -> Void
-    ) {
-        state.pointee.buffer.writeArrayHeader(count: array.count)
-        // By index, so each element is borrowed in place rather than copied
-        // (retaining a string's storage) for the write.
-        for index in array.indices {
-            write(&state.pointee.buffer, array[index])
+    /// Encodes a value through its `Encodable` conformance.
+    func encodeWithContainers<T: Encodable>(_ value: T, codingPath: [CodingKey]) throws {
+        let before = state.pointee.buffer.offset
+        try value.encode(to: _MessagePackEncoder(impl: self, codingPath: codingPath))
+        // MessagePack has no representation for "no value at all";
+        // JSONEncoder throws in the same situation.
+        guard state.pointee.buffer.offset != before else {
+            throw Self.nothingEncoded(value, type: T.self, codingPath: codingPath)
         }
+    }
+
+    // The errors are built out of line, keeping their messages and the
+    // resilient `Date` off the encode paths.
+
+    @inline(never)
+    static func unrepresentableDate(_ value: Any, codingPath: [CodingKey]) -> any Error {
+        let interval = (value as? Date)?.timeIntervalSince1970 ?? .nan
+        return EncodingError.invalidValue(
+            value,
+            EncodingError.Context(
+                codingPath: codingPath,
+                debugDescription:
+                    "Date (timeIntervalSince1970: \(interval)) cannot be represented as a MessagePack timestamp"
+            ))
+    }
+
+    @inline(never)
+    static func nothingEncoded(_ value: Any, type: Any.Type, codingPath: [CodingKey]) -> any Error {
+        EncodingError.invalidValue(
+            value,
+            EncodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "Value of type \(type) did not encode any values"
+            ))
     }
 
     /// Produces the final `Data`, compacting each reserved 5-byte container
