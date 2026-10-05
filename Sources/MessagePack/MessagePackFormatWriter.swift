@@ -130,8 +130,27 @@ extension MessagePackFormatSink {
 
     @inlinable
     @inline(__always)
-    mutating func writeString(_ s: String) {
-        var string = s
+    mutating func writeString(_ string: String) {
+        // Borrows the UTF-8 of a native string in place: `withUTF8` is
+        // mutating, and copying the string to call it retains and releases
+        // its storage for every string written.
+        let written: Void? = string.utf8.withContiguousStorageIfAvailable { utf8 in
+            writeStringHeader(byteCount: utf8.count)
+            if let baseAddress = utf8.baseAddress {
+                writeBytes(baseAddress, count: utf8.count)
+            }
+        }
+        if written == nil {
+            writeNonContiguousString(string)
+        }
+    }
+
+    /// Writes a string with no contiguous UTF-8, such as one bridged from
+    /// `NSString`, by making a native copy.
+    @usableFromInline
+    @inline(never)
+    mutating func writeNonContiguousString(_ string: String) {
+        var string = string
         string.withUTF8 { utf8 in
             writeStringHeader(byteCount: utf8.count)
             if let baseAddress = utf8.baseAddress {
@@ -417,9 +436,10 @@ extension MessagePackFormatSink {
                 let count = items.count
                 var index = stack[top].index
                 while index < count {
-                    let child = items[index]
+                    // Passed straight from the subscript, the element is
+                    // borrowed rather than copied (and released) each time.
+                    try emit(&self, items[index], &stack)
                     index += 1
-                    try emit(&self, child, &stack)
                     if stack.count != top + 1 { break }
                 }
                 if index == count && stack.count == top + 1 {
