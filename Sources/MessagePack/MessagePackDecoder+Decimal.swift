@@ -14,7 +14,7 @@ extension MessagePackDecoding {
         context: MessagePackDecodingContext,
         codingPath: () -> [CodingKey]
     ) throws -> Decimal {
-        let strategy = context.decimalDecodingStrategy
+        let strategy = context.state.pointee.decimalDecodingStrategy
         if strategy.contains(.deferredToDecimal), let format = try? parser.peekFormat(), isMapFormat(format) {
             return try decodeWithContainers(Decimal.self, parser: &parser, context: context, codingPath: codingPath())
         }

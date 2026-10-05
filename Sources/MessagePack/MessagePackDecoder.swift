@@ -20,6 +20,11 @@ import Foundation
 ///   ``MessagePackEncoder/DecimalEncodingStrategy/convertToString`` writes),
 ///   an integer, or a float.
 ///
+/// The `Decoder` and containers handed to `init(from:)` are valid only while
+/// ``decode(_:from:)`` runs: like the pointer in `withUnsafeBytes`, they
+/// refer to the input and to state on the call's stack, so a conformance
+/// must not store them for later use.
+///
 /// Integers decode from any integer wire format that fits the requested
 /// type; the smallest-format encoding the serializer and encoder use is
 /// therefore always round-trippable.
@@ -67,17 +72,26 @@ public struct MessagePackDecoder {
     /// Throws `DecodingError.dataCorrupted` if `data` contains bytes beyond
     /// the first top-level value.
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        // The mutable decoding state lives on this frame, as the context
+        // (and every container it serves) is only valid during the call.
         try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> T in
-            let context = MessagePackDecodingContext(
-                base: raw.baseAddress, count: raw.count, userInfo: userInfo,
-                decimalDecodingStrategy: decimalDecodingStrategy)
-            var parser = context.parser(at: 0)
-            let value = try MessagePackDecoding.unwrap(
-                type, parser: &parser, context: context, codingPath: [])
-            guard parser.offset == raw.count else {
-                throw MessagePackDecoding.corrupted(.trailingBytes, [], offset: parser.offset)
+            var state = MessagePackDecodingContext.State(
+                base: raw.baseAddress,
+                count: raw.count,
+                userInfo: userInfo,
+                decimalDecodingStrategy: decimalDecodingStrategy
+            )
+
+            return try withUnsafeMutablePointer(to: &state) { state in
+                let context = MessagePackDecodingContext(state: state)
+                var parser = context.parser(at: 0)
+                let value = try MessagePackDecoding.unwrap(
+                    type, parser: &parser, context: context, codingPath: [])
+                guard parser.offset == raw.count else {
+                    throw MessagePackDecoding.corrupted(.trailingBytes, [], offset: parser.offset)
+                }
+                return value
             }
-            return value
         }
     }
 }
@@ -86,63 +100,67 @@ extension MessagePackDecoder: @unchecked Sendable {}
 
 // MARK: - Shared decoding state
 
-/// Immutable state shared by every decoder and container of one `decode`
-/// call: the input buffer and user info. The buffer pointer is only valid
-/// for the duration of the top-level `decode` call.
-final class MessagePackDecodingContext {
-    let base: UnsafeRawPointer?
-    let count: Int
-    let userInfo: [CodingUserInfoKey: Any]
-    let decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
+/// The state shared by every decoder and container of one `decode` call: the
+/// input buffer and user info, plus the bookkeeping that lets a decoded value
+/// be passed over without walking its bytes again. The buffer pointer, like
+/// the state itself, is only valid for the duration of the top-level `decode`
+/// call.
+struct MessagePackDecodingContext {
+    struct State {
+        let base: UnsafeRawPointer?
+        let count: Int
+        let userInfo: [CodingUserInfoKey: Any]
+        let decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
 
-    /// Memo of the most recently completed container traversal: a keyed
-    /// container's creation scan (or an unkeyed container decoding its last
-    /// element) already establishes where the value starting at `memoStart`
-    /// ends, letting ``MessagePackDecoding/unwrap(_:parser:context:codingPath:)``
-    /// advance past a decoded value without skipping it a second time. A
-    /// stale memo is harmless: byte offsets uniquely identify values, so a
-    /// matching `memoStart` always implies the same `memoEnd`.
-    var memoStart = -1
-    var memoEnd = -1
+        /// Memo of the most recently completed container traversal: a keyed
+        /// container's creation scan (or an unkeyed container decoding its
+        /// last element) already establishes where the value starting at
+        /// `memoStart` ends, letting
+        /// ``MessagePackDecoding/unwrap(_:parser:context:codingPath:)`` advance
+        /// past a decoded value without skipping it a second time. A stale
+        /// memo is harmless: byte offsets uniquely identify values, so a
+        /// matching `memoStart` always implies the same `memoEnd`.
+        var memoStart = -1
+        var memoEnd = -1
 
-    /// Recycled keyed-container storages. Decoding a homogeneous array of
-    /// structs otherwise allocates a fresh storage object plus its entry
-    /// array per element; reuse eliminates both, and
-    /// `isKnownUniquelyReferenced` keeps a storage alive as long as any
-    /// container still references it.
-    private var storagePool: [MessagePackKeyedStorage] = []
-
-    init(
-        base: UnsafeRawPointer?, count: Int, userInfo: [CodingUserInfoKey: Any],
-        decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
-    ) {
-        self.base = base
-        self.count = count
-        self.userInfo = userInfo
-        self.decimalDecodingStrategy = decimalDecodingStrategy
+        /// Recycled keyed-container storages. Decoding a homogeneous array
+        /// of structs otherwise allocates a fresh storage object plus its
+        /// entry array per element; reuse eliminates both, and
+        /// `isKnownUniquelyReferenced` keeps a storage alive as long as any
+        /// container still references it.
+        var storagePool: [MessagePackKeyedStorage] = []
     }
+
+    /// The decoding state, in the frame of
+    /// ``MessagePackDecoder/decode(_:from:)``: a single pointer, so copying
+    /// the context into every decoder and container costs no reference
+    /// counting, and its mutable parts bypass the dynamic exclusivity
+    /// enforcement class properties get.
+    let state: UnsafeMutablePointer<State>
+
+    var userInfo: [CodingUserInfoKey: Any] { state.pointee.userInfo }
 
     /// Returns a keyed storage no live container references, or a fresh one.
     /// The pool is bounded: with more than `poolLimit` containers alive at
     /// once (keyed nesting that deep is rare), extra storages are simply not
     /// pooled.
     func borrowKeyedStorage() -> MessagePackKeyedStorage {
-        for index in storagePool.indices {
-            if isKnownUniquelyReferenced(&storagePool[index]) {
-                return storagePool[index]
+        for index in state.pointee.storagePool.indices {
+            if isKnownUniquelyReferenced(&state.pointee.storagePool[index]) {
+                return state.pointee.storagePool[index]
             }
         }
         let storage = MessagePackKeyedStorage()
         let poolLimit = 8
-        if storagePool.count < poolLimit {
-            storagePool.append(storage)
+        if state.pointee.storagePool.count < poolLimit {
+            state.pointee.storagePool.append(storage)
         }
         return storage
     }
 
     @inline(__always)
     func parser(at offset: Int) -> MessagePackSerializer.Parser {
-        MessagePackSerializer.Parser(base: base, count: count, offset: offset)
+        MessagePackSerializer.Parser(base: state.pointee.base, count: state.pointee.count, offset: offset)
     }
 }
 
@@ -459,7 +477,7 @@ enum MessagePackDecoding {
         }
         // The default strategy, `.deferredToDecimal` alone, is what
         // `Decimal`'s own conformance reads below.
-        if ObjectIdentifier(T.self) == foundation.decimal, context.decimalDecodingStrategy != .deferredToDecimal {
+        if ObjectIdentifier(T.self) == foundation.decimal, context.state.pointee.decimalDecodingStrategy != .deferredToDecimal {
             return try decodeDecimal(parser: &parser, context: context, codingPath: codingPath) as! T
         }
         return try decodeWithContainers(type, parser: &parser, context: context, codingPath: codingPath())
@@ -477,8 +495,8 @@ enum MessagePackDecoding {
         let impl = MessagePackDecoderImpl(
             context: context, offset: startOffset, codingPath: codingPath)
         let value = try type.init(from: impl)
-        if context.memoStart == startOffset {
-            parser.offset = context.memoEnd
+        if context.state.pointee.memoStart == startOffset {
+            parser.offset = context.state.pointee.memoEnd
         } else {
             try skip(&parser, path: codingPath)
         }
@@ -534,8 +552,8 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         }
         // The scan just found this map's end; remember it so `unwrap` does
         // not have to skip the map again.
-        context.memoStart = offset
-        context.memoEnd = parser.offset
+        context.state.pointee.memoStart = offset
+        context.state.pointee.memoEnd = parser.offset
         return KeyedDecodingContainer(
             MessagePackKeyedDecodingContainer<Key>(
                 context: context, storage: storage, codingPath: codingPath))

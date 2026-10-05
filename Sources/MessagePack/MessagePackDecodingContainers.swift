@@ -111,7 +111,7 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         guard entry.keyLength == keyBytes.count else {
             return false
         }
-        guard entry.keyLength > 0, let keyBase = keyBytes.baseAddress, let base = context.base else {
+        guard entry.keyLength > 0, let keyBase = keyBytes.baseAddress, let base = context.state.pointee.base else {
             // Empty keys match; any other key has bytes on both sides.
             return entry.keyLength == 0
         }
@@ -449,8 +449,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     private mutating func advanceIndex() {
         currentIndex += 1
         if currentIndex == elementCount {
-            context.memoStart = startOffset
-            context.memoEnd = parser.offset
+            context.state.pointee.memoStart = startOffset
+            context.state.pointee.memoEnd = parser.offset
         }
     }
 
