@@ -38,6 +38,34 @@ struct EncoderMisuseTrapTests {
         }
     }
 
+    @Test func containerAfterSingleValueTraps() async throws {
+        await #expect(processExitsWith: .failure) {
+            struct Inner: Encodable {
+                enum Keys: String, CodingKey {
+                    case a
+                }
+
+                func encode(to encoder: Encoder) throws {
+                    var container = encoder.container(keyedBy: Keys.self)
+                    try container.encode(1, forKey: .a)
+                }
+            }
+            struct Outer: Encodable {
+                enum Keys: String, CodingKey {
+                    case b
+                }
+
+                func encode(to encoder: Encoder) throws {
+                    var single = encoder.singleValueContainer()
+                    try single.encode(Inner())
+                    var keyed = encoder.container(keyedBy: Keys.self)  // the value is already encoded
+                    try keyed.encode(2, forKey: .b)
+                }
+            }
+            _ = try? MessagePackEncoder().encode(Outer())
+        }
+    }
+
     @Test func mismatchedContainerKindTraps() async throws {
         await #expect(processExitsWith: .failure) {
             struct Mismatched: Encodable {
