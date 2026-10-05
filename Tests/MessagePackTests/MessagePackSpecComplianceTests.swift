@@ -378,6 +378,38 @@ struct UTF8ValidationTests {
     }
 }
 
+/// "Deserializers should provide functionality to get the original byte
+/// array" of a string holding an invalid byte sequence.
+@Suite("Original string bytes")
+struct OriginalStringBytesTests {
+    private struct RawString: MessagePackSerializable {
+        let bytes: Data
+
+        func serialize(into writer: inout MessagePackWriter) {}
+
+        init(messagePack reader: inout MessagePackReader) throws(MessagePackError) {
+            bytes = try reader.readStringBytes()
+        }
+    }
+
+    @Test func invalidUTF8IsReadAsItIs() throws {
+        let invalid: [UInt8] = [0x61, 0xff, 0xfe, 0x62]
+        for header: [UInt8] in [[0xa4], [0xd9, 0x04], [0xda, 0x00, 0x04], [0xdb, 0x00, 0x00, 0x00, 0x04]] {
+            let data = Data(header + invalid)
+            #expect(throws: MessagePackError.invalidUTF8) {
+                try MessagePackSerializer.deserialize(String.self, from: data)
+            }
+            #expect(try MessagePackSerializer.deserialize(RawString.self, from: data).bytes == Data(invalid))
+        }
+    }
+
+    @Test func otherTypesAreAMismatch() throws {
+        #expect(throws: MessagePackError.typeMismatch(expected: "string", format: 0xc4)) {
+            try MessagePackSerializer.deserialize(RawString.self, from: Data([0xc4, 0x01, 0x61]))
+        }
+    }
+}
+
 @Suite("Duplicate map keys")
 struct DuplicateMapKeyTests {
     @Test func lastEntryWins() throws {
