@@ -392,7 +392,7 @@ struct MessagePackEncoderImpl {
         // MessagePack has no representation for "no value at all";
         // JSONEncoder throws in the same situation.
         guard state.pointee.buffer.offset != start else {
-            throw Self.nothingEncoded(value, codingPath: codingPath(path))
+            throw Self.nothingEncoded(value, type: T.self, codingPath: codingPath(path))
         }
 
         // The value is complete, so are its containers: closing them here
@@ -420,12 +420,12 @@ struct MessagePackEncoderImpl {
     }
 
     @inline(never)
-    static func nothingEncoded(_ value: Any, codingPath: [CodingKey]) -> any Error {
+    static func nothingEncoded(_ value: Any, type: Any.Type, codingPath: [CodingKey]) -> any Error {
         EncodingError.invalidValue(
             value,
             EncodingError.Context(
                 codingPath: codingPath,
-                debugDescription: "Value of type \(type(of: value)) did not encode any values"
+                debugDescription: "Value of type \(type) did not encode any values"
             ))
     }
 }
