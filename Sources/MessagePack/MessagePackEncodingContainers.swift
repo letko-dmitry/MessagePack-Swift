@@ -17,18 +17,20 @@ private let outOfOrderWriteMessage = """
 ///   well-formed entry (the key is written at actual encode time).
 final class MessagePackDeferredEncoder: Encoder {
     let impl: MessagePackEncoderImpl
-    let codingPath: [CodingKey]
+    let path: MessagePackEncodingPath
     let parentPosition: Int
     /// The map key to write on activation; nil when the parent is an array.
     let key: String?
     private var inner: _MessagePackEncoder?
 
-    init(impl: MessagePackEncoderImpl, codingPath: [CodingKey], parentPosition: Int, key: String?) {
+    init(impl: MessagePackEncoderImpl, path: MessagePackEncodingPath, parentPosition: Int, key: String?) {
         self.impl = impl
-        self.codingPath = codingPath
+        self.path = path
         self.parentPosition = parentPosition
         self.key = key
     }
+
+    var codingPath: [CodingKey] { impl.codingPath(path) }
 
     var userInfo: [CodingUserInfoKey: Any] { impl.userInfo }
 
@@ -38,7 +40,7 @@ final class MessagePackDeferredEncoder: Encoder {
         precondition(
             impl.state.pointee.beginEntry(at: parentPosition), outOfOrderWriteMessage)
         if let key { impl.state.pointee.buffer.writeString(key) }
-        let encoder = _MessagePackEncoder(impl: impl, codingPath: codingPath)
+        let encoder = _MessagePackEncoder(impl: impl, path: path)
         inner = encoder
         return encoder
     }
@@ -88,12 +90,12 @@ struct MessagePackDeferredSingleValueEncodingContainer: SingleValueEncodingConta
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: Int128) throws {
-        try owner.impl.encodeWideInteger(value, codingPath: owner.codingPath) { _ = begin() }
+        try owner.impl.encodeWideInteger(value, path: owner.path) { _ = begin() }
     }
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: UInt128) throws {
-        try owner.impl.encodeWideInteger(value, codingPath: owner.codingPath) { _ = begin() }
+        try owner.impl.encodeWideInteger(value, path: owner.path) { _ = begin() }
     }
 
     // The ten integer overloads differ only in the width they widen from.
@@ -111,7 +113,7 @@ struct MessagePackDeferredSingleValueEncodingContainer: SingleValueEncodingConta
 
     mutating func encode<T: Encodable>(_ value: T) throws {
         _ = begin()
-        try owner.impl.encodeEncodable(value, codingPath: owner.codingPath)
+        try owner.impl.encodeEncodable(value, path: owner.path)
     }
 }
 
@@ -120,7 +122,9 @@ struct MessagePackDeferredSingleValueEncodingContainer: SingleValueEncodingConta
 struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainerProtocol {
     let impl: MessagePackEncoderImpl
     let headerPosition: Int
-    let codingPath: [CodingKey]
+    let path: MessagePackEncodingPath
+
+    var codingPath: [CodingKey] { impl.codingPath(path) }
 
     /// Bumps the entry count and writes the key. The value must follow.
     @inline(__always)
@@ -167,12 +171,12 @@ struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainer
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: Int128, forKey key: Key) throws {
-        try impl.encodeWideInteger(value, codingPath: codingPath + [key]) { beginEntry(key) }
+        try impl.encodeWideInteger(value, path: impl.path(path, appending: key)) { beginEntry(key) }
     }
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: UInt128, forKey key: Key) throws {
-        try impl.encodeWideInteger(value, codingPath: codingPath + [key]) { beginEntry(key) }
+        try impl.encodeWideInteger(value, path: impl.path(path, appending: key)) { beginEntry(key) }
     }
 
     // The ten integer overloads differ only in the width they widen from.
@@ -192,7 +196,7 @@ struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainer
 
     mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
         beginEntry(key)
-        try impl.encodeEncodable(value, codingPath: codingPath + [key])
+        try impl.encodeEncodable(value, path: impl.path(path, appending: key))
     }
 
     mutating func nestedContainer<NestedKey: CodingKey>(
@@ -203,7 +207,7 @@ struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainer
             MessagePackKeyedEncodingContainer<NestedKey>(
                 impl: impl,
                 headerPosition: impl.beginContainer(isMap: true),
-                codingPath: codingPath + [key]
+                path: impl.path(path, appending: key)
             )
         )
     }
@@ -213,14 +217,14 @@ struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainer
         return MessagePackUnkeyedEncodingContainer(
             impl: impl,
             headerPosition: impl.beginContainer(isMap: false),
-            codingPath: codingPath + [key]
+            path: impl.path(path, appending: key)
         )
     }
 
     mutating func superEncoder() -> Encoder {
         MessagePackDeferredEncoder(
             impl: impl,
-            codingPath: codingPath + [MessagePackCodingKey.super],
+            path: impl.path(path, appending: MessagePackCodingKey.super),
             parentPosition: headerPosition,
             key: MessagePackCodingKey.super.stringValue
         )
@@ -229,7 +233,7 @@ struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainer
     mutating func superEncoder(forKey key: Key) -> Encoder {
         MessagePackDeferredEncoder(
             impl: impl,
-            codingPath: codingPath + [key],
+            path: impl.path(path, appending: key),
             parentPosition: headerPosition,
             key: key.stringValue
         )
@@ -241,7 +245,9 @@ struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainer
 struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
     let impl: MessagePackEncoderImpl
     let headerPosition: Int
-    let codingPath: [CodingKey]
+    let path: MessagePackEncodingPath
+
+    var codingPath: [CodingKey] { impl.codingPath(path) }
 
     var count: Int { impl.state.pointee.buffer.containerCount(at: headerPosition) }
 
@@ -288,14 +294,14 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: Int128) throws {
-        try impl.encodeWideInteger(value, codingPath: codingPath + [MessagePackCodingKey(index: count)]) {
+        try impl.encodeWideInteger(value, path: impl.path(path, appendingIndex: count)) {
             beginElement()
         }
     }
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: UInt128) throws {
-        try impl.encodeWideInteger(value, codingPath: codingPath + [MessagePackCodingKey(index: count)]) {
+        try impl.encodeWideInteger(value, path: impl.path(path, appendingIndex: count)) {
             beginElement()
         }
     }
@@ -318,7 +324,7 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
     mutating func encode<T: Encodable>(_ value: T) throws {
         beginElement()
         try impl.encodeEncodable(
-            value, codingPath: codingPath + [MessagePackCodingKey(index: count - 1)])
+            value, path: impl.path(path, appendingIndex: count - 1))
     }
 
     mutating func nestedContainer<NestedKey: CodingKey>(
@@ -329,7 +335,7 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
             MessagePackKeyedEncodingContainer<NestedKey>(
                 impl: impl,
                 headerPosition: impl.beginContainer(isMap: true),
-                codingPath: codingPath + [MessagePackCodingKey(index: count - 1)]
+                path: impl.path(path, appendingIndex: count - 1)
             )
         )
     }
@@ -339,14 +345,14 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
         return MessagePackUnkeyedEncodingContainer(
             impl: impl,
             headerPosition: impl.beginContainer(isMap: false),
-            codingPath: codingPath + [MessagePackCodingKey(index: count - 1)]
+            path: impl.path(path, appendingIndex: count - 1)
         )
     }
 
     mutating func superEncoder() -> Encoder {
         MessagePackDeferredEncoder(
             impl: impl,
-            codingPath: codingPath + [MessagePackCodingKey(index: count)],
+            path: impl.path(path, appendingIndex: count),
             parentPosition: headerPosition,
             key: nil
         )
@@ -357,8 +363,10 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
 
 struct MessagePackSingleValueEncodingContainer: SingleValueEncodingContainer {
     let impl: MessagePackEncoderImpl
-    let codingPath: [CodingKey]
+    let path: MessagePackEncodingPath
     let encoderID: Int
+
+    var codingPath: [CodingKey] { impl.codingPath(path) }
 
     /// Marks the owning encoder's slot as consumed so a second encode (or a
     /// container request) for the same value traps, like `JSONEncoder`.
@@ -405,12 +413,12 @@ struct MessagePackSingleValueEncodingContainer: SingleValueEncodingContainer {
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: Int128) throws {
-        try impl.encodeWideInteger(value, codingPath: codingPath) { beginValue() }
+        try impl.encodeWideInteger(value, path: path) { beginValue() }
     }
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: UInt128) throws {
-        try impl.encodeWideInteger(value, codingPath: codingPath) { beginValue() }
+        try impl.encodeWideInteger(value, path: path) { beginValue() }
     }
 
     // The ten integer overloads differ only in the width they widen from.
@@ -430,6 +438,6 @@ struct MessagePackSingleValueEncodingContainer: SingleValueEncodingContainer {
 
     mutating func encode<T: Encodable>(_ value: T) throws {
         beginValue()
-        try impl.encodeEncodable(value, codingPath: codingPath)
+        try impl.encodeEncodable(value, path: path)
     }
 }
