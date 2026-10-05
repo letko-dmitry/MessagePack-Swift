@@ -312,8 +312,10 @@ final class MessagePackEncoderImpl {
         _ array: [E], _ write: (inout MessagePackScratchBuffer, E) -> Void
     ) {
         state.pointee.buffer.writeArrayHeader(count: array.count)
-        for element in array {
-            write(&state.pointee.buffer, element)
+        // By index, so each element is borrowed in place rather than copied
+        // (retaining a string's storage) for the write.
+        for index in array.indices {
+            write(&state.pointee.buffer, array[index])
         }
     }
 

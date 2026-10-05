@@ -28,7 +28,7 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
     @inlinable
     @inline(__always)
     mutating func ensure(_ additional: Int) {
-        if capacity - offset < additional {
+        if capacity &- offset < additional {
             grow(additional)
         }
     }
@@ -52,7 +52,7 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
     mutating func writeByte(_ byte: UInt8) {
         ensure(1)
         base.storeBytes(of: byte, toByteOffset: offset, as: UInt8.self)
-        offset += 1
+        offset &+= 1
     }
 
     @inlinable
@@ -60,15 +60,30 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
     mutating func writeBigEndian<T: FixedWidthInteger>(_ value: T) {
         ensure(MemoryLayout<T>.size)
         base.storeBytes(of: value.bigEndian, toByteOffset: offset, as: T.self)
-        offset += MemoryLayout<T>.size
+        offset &+= MemoryLayout<T>.size
     }
 
     @inlinable
     @inline(__always)
     mutating func writeBytes(_ pointer: UnsafeRawPointer, count: Int) {
         ensure(count)
-        base.advanced(by: offset).copyMemory(from: pointer, byteCount: count)
-        offset += count
+        let destination = base + offset
+        // Keys and most strings are a few bytes long, for which two
+        // overlapping loads and stores beat a call to `memmove`.
+        if count >= 8 && count <= 16 {
+            let head = pointer.loadUnaligned(as: UInt64.self)
+            let tail = pointer.loadUnaligned(fromByteOffset: count &- 8, as: UInt64.self)
+            destination.storeBytes(of: head, as: UInt64.self)
+            destination.storeBytes(of: tail, toByteOffset: count &- 8, as: UInt64.self)
+        } else if count >= 4 && count < 8 {
+            let head = pointer.loadUnaligned(as: UInt32.self)
+            let tail = pointer.loadUnaligned(fromByteOffset: count &- 4, as: UInt32.self)
+            destination.storeBytes(of: head, as: UInt32.self)
+            destination.storeBytes(of: tail, toByteOffset: count &- 4, as: UInt32.self)
+        } else {
+            destination.copyMemory(from: pointer, byteCount: count)
+        }
+        offset &+= count
     }
 
     /// Reserves space for a container header whose count is not yet known.
