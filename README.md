@@ -207,11 +207,14 @@ Neither direction materializes a `MessagePackValue` tree:
   Container headers (counts unknown up front) are reserved at full width,
   counts are accumulated in the reserved bytes themselves, and headers are
   compacted to the smallest format in one final pass.
-- **Decoding** walks the raw bytes directly. A keyed container scans its
-  entries' byte offsets once and matches coding keys by comparing UTF-8
-  bytes in place (no key `String` allocations), starting each lookup at the
-  previous match so keys requested in wire order cost O(1). Container scans
-  are memoized so a decoded value is never skipped twice.
+- **Decoding** walks the raw bytes directly. A keyed container records its
+  entries' byte offsets and key lengths as it scans, and matches coding keys
+  with a length check and a `memcmp` against the wire bytes (no key
+  `String` allocations), starting each lookup at the previous match so
+  keys requested in wire order cost O(1). `decodeIfPresent` looks a key up
+  once instead of the default three times (`contains`, `decodeNil`,
+  `decode`). Container scans are memoized so a decoded value is never
+  skipped twice.
 - Values of natively represented types (integers, strings, floats, bools,
   `Date`/`Data`/timestamps) flowing through the generic
   `encode<T>`/`decode<T>` funnels are coded directly, bypassing the

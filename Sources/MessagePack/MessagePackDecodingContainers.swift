@@ -10,6 +10,9 @@ import Foundation
 final class MessagePackKeyedStorage {
     struct Entry {
         let keyOffset: Int
+        /// The byte count of a string key, whose bytes end where the value
+        /// starts, or -1 for any other key.
+        let keyLength: Int
         let valueOffset: Int
     }
 
@@ -31,10 +34,16 @@ final class MessagePackKeyedStorage {
         scanned.reserveCapacity(Swift.min(entryCount, messagePackMaxPreallocation))
         for _ in 0..<entryCount {
             let keyOffset = parser.offset
-            try parser.skipValue()
+            let keyLength: Int
+            if let keyBytes = try parser.readRawStringBytes() {
+                keyLength = keyBytes.count
+            } else {
+                try parser.skipValue()
+                keyLength = -1
+            }
             let valueOffset = parser.offset
             try parser.skipValue()
-            scanned.append(Entry(keyOffset: keyOffset, valueOffset: valueOffset))
+            scanned.append(Entry(keyOffset: keyOffset, keyLength: keyLength, valueOffset: valueOffset))
         }
         entries = scanned
     }
@@ -68,22 +77,21 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
 
     /// Finds the value offset for a key by comparing raw key bytes in place;
     /// no `String` is materialized for wire keys.
-    private func valueOffset(stringValue: String, intValue: Int?) -> Int? {
+    private func valueOffset(for key: some CodingKey) -> Int? {
         let entries = storage.entries
         let entryCount = entries.count
         guard entryCount > 0 else { return nil }
-        var keyString = stringValue
+        var keyString = key.stringValue
         return keyString.withUTF8 { (keyBytes: UnsafeBufferPointer<UInt8>) -> Int? in
             var index = storage.searchIndex
             for _ in 0..<entryCount {
                 if index >= entryCount { index = 0 }
                 let entry = entries[index]
                 index += 1
-                if matches(keyBytes: keyBytes, intValue: intValue, at: entry.keyOffset) {
-                    // Remember the match itself (not the next entry): the
-                    // default decodeIfPresent looks the same key up three
-                    // times (contains → decodeNil → decode), and this keeps
-                    // repeats O(1) while sequential access stays O(1).
+                if matches(keyBytes: keyBytes, key: key, entry: entry) {
+                    // Remember the match itself (not the next entry), so a
+                    // key asked for again (`contains` before `decode`) is
+                    // found at once while sequential access stays O(1).
                     storage.searchIndex = index - 1
                     return entry.valueOffset
                 }
@@ -93,20 +101,24 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     }
 
     private func matches(
-        keyBytes: UnsafeBufferPointer<UInt8>, intValue: Int?, at keyOffset: Int
+        keyBytes: UnsafeBufferPointer<UInt8>, key: some CodingKey, entry: MessagePackKeyedStorage.Entry
     ) -> Bool {
-        var parser = context.parser(at: keyOffset)
-        // A truncated string key also lands here (`readRawStringBytes` throws
-        // rather than returning nil); the integer path then rejects it, which
-        // is the same answer a direct byte comparison would give.
-        guard let wireBytes = ((try? parser.readRawStringBytes()) ?? nil) else {
-            return matchesIntegerKey(intValue, at: keyOffset)
+        guard entry.keyLength >= 0 else {
+            // Asked for only here: string keys are the common case, and the
+            // `intValue` of a key type is a call through its conformance.
+            return matchesIntegerKey(key.intValue, at: entry.keyOffset)
         }
-        guard wireBytes.count == keyBytes.count else { return false }
-        guard let wireBase = wireBytes.baseAddress, let keyBase = keyBytes.baseAddress else {
-            return wireBytes.isEmpty
+        guard entry.keyLength == keyBytes.count else {
+            return false
         }
-        return memcmp(wireBase, keyBase, wireBytes.count) == 0
+        guard entry.keyLength > 0, let keyBase = keyBytes.baseAddress, let base = context.base else {
+            // Empty keys match; any other key has bytes on both sides.
+            return entry.keyLength == 0
+        }
+
+        // The scan recorded where the key's bytes are, so this is a length
+        // check and a `memcmp`, without parsing the key's header again.
+        return memcmp(base + (entry.valueOffset &- entry.keyLength), keyBase, keyBytes.count) == 0
     }
 
     /// Matches a non-string wire key against the coding key's `intValue`.
@@ -121,7 +133,7 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     }
 
     private func requireOffset(_ key: Key) throws -> Int {
-        guard let offset = valueOffset(stringValue: key.stringValue, intValue: key.intValue) else {
+        guard let offset = valueOffset(for: key) else {
             throw DecodingError.keyNotFound(
                 key,
                 DecodingError.Context(
@@ -133,7 +145,7 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     }
 
     func contains(_ key: Key) -> Bool {
-        valueOffset(stringValue: key.stringValue, intValue: key.intValue) != nil
+        valueOffset(for: key) != nil
     }
 
     func decodeNil(forKey key: Key) throws -> Bool {
@@ -141,11 +153,36 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         return ((try? parser.peekFormat()) ?? 0xc1) == 0xc0
     }
 
+    /// The value offset for a key whose value is present and not nil. One
+    /// lookup serves all of `decodeIfPresent`, where the default
+    /// implementation looks the key up three times (`contains`,
+    /// `decodeNil`, `decode`); `PropertyListDecoder` avoids that the same
+    /// way.
+    private func presentValueOffset(_ key: Key) -> Int? {
+        guard let valueOffset = valueOffset(for: key) else { return nil }
+        var parser = context.parser(at: valueOffset)
+        return parser.readRawNil() ? nil : valueOffset
+    }
+
     private func decodeScalar<T>(
         _ type: T.Type, forKey key: Key,
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T {
-        let valueOffset = try requireOffset(key)
+        try decodeScalar(type, at: try requireOffset(key), forKey: key, read)
+    }
+
+    private func decodeScalarIfPresent<T>(
+        _ type: T.Type, forKey key: Key,
+        _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
+    ) throws -> T? {
+        guard let valueOffset = presentValueOffset(key) else { return nil }
+        return try decodeScalar(type, at: valueOffset, forKey: key, read)
+    }
+
+    private func decodeScalar<T>(
+        _ type: T.Type, at valueOffset: Int, forKey key: Key,
+        _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
+    ) throws -> T {
         var parser = context.parser(at: valueOffset)
         do throws(MessagePackDecodeFailure) {
             return try read(&parser)
@@ -223,7 +260,80 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     }
 
     func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
-        var parser = context.parser(at: try requireOffset(key))
+        try decode(type, at: try requireOffset(key), forKey: key)
+    }
+
+    func decodeIfPresent(_ type: Bool.Type, forKey key: Key) throws -> Bool? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readBool)
+    }
+
+    func decodeIfPresent(_ type: String.Type, forKey key: Key) throws -> String? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readString)
+    }
+
+    func decodeIfPresent(_ type: Double.Type, forKey key: Key) throws -> Double? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readDouble)
+    }
+
+    func decodeIfPresent(_ type: Float.Type, forKey key: Key) throws -> Float? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readFloat)
+    }
+
+    func decodeIfPresent(_ type: Int.Type, forKey key: Key) throws -> Int? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: Int8.Type, forKey key: Key) throws -> Int8? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: Int16.Type, forKey key: Key) throws -> Int16? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: Int32.Type, forKey key: Key) throws -> Int32? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: Int64.Type, forKey key: Key) throws -> Int64? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt.Type, forKey key: Key) throws -> UInt? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt8.Type, forKey key: Key) throws -> UInt8? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt16.Type, forKey key: Key) throws -> UInt16? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt32.Type, forKey key: Key) throws -> UInt32? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt64.Type, forKey key: Key) throws -> UInt64? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+    @available(watchOS 11.0, *)
+    func decodeIfPresent(_ type: Int128.Type, forKey key: Key) throws -> Int128? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+    @available(watchOS 11.0, *)
+    func decodeIfPresent(_ type: UInt128.Type, forKey key: Key) throws -> UInt128? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T? {
+        guard let valueOffset = presentValueOffset(key) else { return nil }
+        return try decode(type, at: valueOffset, forKey: key)
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, at valueOffset: Int, forKey key: Key) throws -> T {
+        var parser = context.parser(at: valueOffset)
         return try MessagePackDecoding.unwrap(
             type, parser: &parser, context: context, codingPath: codingPath + [key])
     }
@@ -244,8 +354,8 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
 
     /// Mirroring `JSONDecoder`, a missing entry yields a decoder positioned
     /// on a nil value rather than throwing `keyNotFound`.
-    private func superDecoder(stringValue: String, intValue: Int?, key: CodingKey) -> Decoder {
-        guard let offset = valueOffset(stringValue: stringValue, intValue: intValue) else {
+    private func superDecoder(for key: some CodingKey) -> Decoder {
+        guard let offset = valueOffset(for: key) else {
             return MessagePackNilDecoder(
                 codingPath: codingPath + [key], userInfo: context.userInfo)
         }
@@ -254,12 +364,11 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     }
 
     func superDecoder() throws -> Decoder {
-        let superKey = MessagePackCodingKey.super
-        return superDecoder(stringValue: superKey.stringValue, intValue: nil, key: superKey)
+        superDecoder(for: MessagePackCodingKey.super)
     }
 
     func superDecoder(forKey key: Key) throws -> Decoder {
-        superDecoder(stringValue: key.stringValue, intValue: key.intValue, key: key)
+        superDecoder(for: key)
     }
 }
 
