@@ -21,8 +21,8 @@ private struct DeferredDecimal: Encodable {
 
 @Suite("Codable Decimal")
 struct CodableDecimalTests {
-    /// `Decimal` has no MessagePack type: it goes through its own `Codable`
-    /// conformance, a map of its fields.
+    /// `Decimal` has no MessagePack type: by default it goes through its own
+    /// `Codable` conformance, a map of its fields.
     @Test func defersToDecimal() throws {
         let decimal = try #require(Decimal(string: "-1234.5678"))
 
@@ -31,8 +31,8 @@ struct CodableDecimalTests {
         #expect(try MessagePackDecoder().decode(Box<Decimal>.self, from: data).value == decimal)
     }
 
-    /// A string or a number is not that map: a type mismatch, so a decoding
-    /// fallback on a mismatch works.
+    /// A string or a number is not that map: by default a type mismatch, so
+    /// a decoding fallback on a mismatch works.
     @Test func otherTypesAreAMismatch() throws {
         for value: MessagePackValue in [.string("0.35"), .float64(0.35), .uint8(3)] {
             let data = try MessagePackSerializer.serialize(value: value)
@@ -40,6 +40,66 @@ struct CodableDecimalTests {
                 try MessagePackDecoder().decode(Decimal.self, from: data)
             } throws: { error in
                 if case DecodingError.typeMismatch = error { true } else { false }
+            }
+        }
+    }
+}
+
+@Suite("Codable Decimal strategies")
+struct CodableDecimalStrategyTests {
+    private static let stringEncoder: MessagePackEncoder = {
+        var encoder = MessagePackEncoder()
+        encoder.decimalEncodingStrategy = .string
+        return encoder
+    }()
+
+    private static let stringOrNumberDecoder: MessagePackDecoder = {
+        var decoder = MessagePackDecoder()
+        decoder.decimalDecodingStrategy = .stringOrNumber
+        return decoder
+    }()
+
+    @Test func stringStrategyWritesTheExactDigits() throws {
+        let decimal = try #require(Decimal(string: "0.35"))
+        let data = try Self.stringEncoder.encode(decimal)
+        #expect([UInt8](data) == [0xa4] + Array("0.35".utf8))
+        #expect(data.count < (try MessagePackEncoder().encode(decimal)).count)
+    }
+
+    @Test func bothEncodingsRoundTripExactly() throws {
+        for encoder in [MessagePackEncoder(), Self.stringEncoder] {
+            for text in ["0.35", "-12.5", "0", "12345678901234567890123456789012345678.5", "0.0000001"] {
+                let decimal = try #require(Decimal(string: text))
+                let data = try encoder.encode(Box(value: decimal))
+                #expect(try Self.stringOrNumberDecoder.decode(Box<Decimal>.self, from: data).value == decimal)
+            }
+
+            let nan = try Self.stringOrNumberDecoder.decode(Decimal.self, from: encoder.encode(Decimal.nan))
+            #expect(nan.isNaN)
+        }
+    }
+
+    @Test func decodesNumbers() throws {
+        let decoder = Self.stringOrNumberDecoder
+        let fromFloat = try MessagePackSerializer.serialize(value: .float64(0.35))
+        #expect(try decoder.decode(Decimal.self, from: fromFloat) == Decimal(string: "0.35"))
+
+        // Through the float 32's own shortest text, not a widened Double's.
+        let fromFloat32 = try MessagePackSerializer.serialize(value: .float32(0.35))
+        #expect(try decoder.decode(Decimal.self, from: fromFloat32) == Decimal(string: "0.35"))
+
+        let fromInteger = try MessagePackSerializer.serialize(value: .uint64(.max))
+        #expect(try decoder.decode(Decimal.self, from: fromInteger) == Decimal(UInt64.max))
+
+        let fromNegative = try MessagePackSerializer.serialize(value: .int64(.min))
+        #expect(try decoder.decode(Decimal.self, from: fromNegative) == Decimal(Int64.min))
+    }
+
+    @Test func rejectsNonDecimals() throws {
+        for value: MessagePackValue in [.string("1.5abc"), .string("1,5"), .string(""), .bool(true), .float64(.infinity)] {
+            let data = try MessagePackSerializer.serialize(value: value)
+            #expect(throws: DecodingError.self) {
+                try Self.stringOrNumberDecoder.decode(Decimal.self, from: data)
             }
         }
     }

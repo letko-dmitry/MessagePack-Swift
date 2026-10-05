@@ -11,4 +11,5 @@ struct MessagePackFoundationTypes {
 
     let date = ObjectIdentifier(Date.self)
     let data = ObjectIdentifier(Data.self)
+    let decimal = ObjectIdentifier(Decimal.self)
 }

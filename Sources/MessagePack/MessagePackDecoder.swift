@@ -14,6 +14,11 @@ import Foundation
 ///   a numeric value interpreted as seconds since 1970.
 /// - `Data` decodes from bin 8/16/32.
 /// - ``MessagePackTimestamp`` decodes from the timestamp extension type.
+/// - `Decimal` decodes through its own `Codable` conformance (the map of its
+///   fields), and with ``decimalDecodingStrategy`` set to
+///   ``DecimalDecodingStrategy/stringOrNumber`` also from a string of decimal
+///   digits (what ``MessagePackEncoder/DecimalEncodingStrategy/string``
+///   writes) or any number.
 ///
 /// The `Decoder` and containers handed to `init(from:)` are valid only while
 /// ``decode(_:from:)`` runs: like the pointer in `withUnsafeBytes`, they
@@ -24,9 +29,27 @@ import Foundation
 /// type; the smallest-format encoding the serializer and encoder use is
 /// therefore always round-trippable.
 public struct MessagePackDecoder {
+    /// How `Decimal` values are read, named like the encoder's
+    /// ``MessagePackEncoder/DecimalEncodingStrategy``.
+    public enum DecimalDecodingStrategy: Sendable {
+        /// Defers to `Decimal`'s own `Codable` conformance, which reads the
+        /// map of its fields. The default, and what earlier versions did.
+        case deferredToDecimal
+        /// Also reads a string of decimal digits (what
+        /// ``MessagePackEncoder/DecimalEncodingStrategy/string`` writes, and
+        /// other languages' decimal types produce) and any number: integers
+        /// convert exactly, floats through their shortest decimal text, so a
+        /// float 64 of 0.35 decodes as 0.35.
+        case stringOrNumber
+    }
+
     /// Contextual information made available to the `Decodable` types via
     /// `Decoder.userInfo`.
     public var userInfo: [CodingUserInfoKey: Any] = [:]
+
+    /// How `Decimal` values are read. Defaults to
+    /// ``DecimalDecodingStrategy/deferredToDecimal``.
+    public var decimalDecodingStrategy: DecimalDecodingStrategy = .deferredToDecimal
 
     public init() {}
 
@@ -38,7 +61,12 @@ public struct MessagePackDecoder {
         // The mutable decoding state lives on this frame, as the context
         // (and every container it serves) is only valid during the call.
         try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> T in
-            var state = MessagePackDecodingContext.State(base: raw.baseAddress, count: raw.count, userInfo: userInfo)
+            var state = MessagePackDecodingContext.State(
+                base: raw.baseAddress,
+                count: raw.count,
+                userInfo: userInfo,
+                decimalDecodingStrategy: decimalDecodingStrategy
+            )
 
             return try withUnsafeMutablePointer(to: &state) { state in
                 let context = MessagePackDecodingContext(state: state)
@@ -68,6 +96,7 @@ struct MessagePackDecodingContext {
         let base: UnsafeRawPointer?
         let count: Int
         let userInfo: [CodingUserInfoKey: Any]
+        let decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
 
         /// Memo of the most recently completed value whose end no keyed
         /// storage tracks: an unkeyed container that decoded its last
@@ -450,6 +479,9 @@ enum MessagePackDecoding {
         }
         if let collectionType = MessagePackCollectionType(ObjectIdentifier(T.self)) {
             return try decodeCollection(collectionType, type, parser: &parser, context: context, path: path)
+        }
+        if ObjectIdentifier(T.self) == foundation.decimal, context.state.pointee.decimalDecodingStrategy == .stringOrNumber {
+            return try decodeDecimal(parser: &parser, context: context, path: path) as! T
         }
 
         return try decodeWithContainers(type, parser: &parser, context: context, path: path())

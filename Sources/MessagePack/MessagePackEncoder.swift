@@ -16,6 +16,10 @@ import Foundation
 ///   throw `EncodingError.invalidValue`.
 /// - `Data` is encoded as bin 8/16/32.
 /// - ``MessagePackTimestamp`` is encoded as the timestamp extension type.
+/// - `Decimal`, which MessagePack has no type for, is encoded through its own
+///   `Codable` conformance (a map of its fields), or, with
+///   ``decimalEncodingStrategy`` set to ``DecimalEncodingStrategy/string``,
+///   as a string of its exact decimal digits such as `"0.35"`.
 ///
 /// Keyed containers are encoded as maps with string keys. Because encoding is
 /// streaming, writes must be well nested: a nested container (or an encoder
@@ -34,9 +38,27 @@ import Foundation
 /// conformance: it has value semantics, but values stored in `userInfo` must
 /// themselves be `Sendable` for cross-task sharing to be safe.
 public struct MessagePackEncoder {
+    /// How `Decimal` values are written, named like `JSONEncoder`'s
+    /// strategies.
+    public enum DecimalEncodingStrategy: Sendable {
+        /// Defers to `Decimal`'s own `Codable` conformance, which writes a
+        /// map of its fields (`exponent`, `mantissa`, …). The default, and
+        /// what earlier versions wrote.
+        case deferredToDecimal
+        /// A string of the exact decimal digits (`"0.35"`): a fraction of
+        /// the map's size, and parsed by other languages' decimal types.
+        /// Decoders need ``MessagePackDecoder/DecimalDecodingStrategy/stringOrNumber``
+        /// to read it; versions before this option cannot.
+        case string
+    }
+
     /// Contextual information made available to the `Encodable` types via
     /// `Encoder.userInfo`.
     public var userInfo: [CodingUserInfoKey: Any] = [:]
+
+    /// How `Decimal` values are written. Defaults to
+    /// ``DecimalEncodingStrategy/deferredToDecimal``.
+    public var decimalEncodingStrategy: DecimalEncodingStrategy = .deferredToDecimal
 
     public init() {}
 
@@ -46,7 +68,7 @@ public struct MessagePackEncoder {
     /// encodes nothing, since MessagePack has no representation for "no
     /// value".
     public func encode<T: Encodable>(_ value: T) throws -> Data {
-        try MessagePackEncoderState.with(userInfo: userInfo) { state in
+        try MessagePackEncoderState.with(userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy) { state in
             do {
                 try MessagePackEncoderImpl(state: state).encode(value, path: .root)
             } catch {
@@ -68,6 +90,7 @@ extension MessagePackEncoder: @unchecked Sendable {}
 /// class properties.
 struct MessagePackEncoderState {
     let userInfo: [CodingUserInfoKey: Any]
+    let decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy
 
     var buffer: MessagePackOutputBuffer
 
@@ -87,6 +110,7 @@ struct MessagePackEncoderState {
     /// allocating any of them.
     static func with<R>(
         userInfo: [CodingUserInfoKey: Any],
+        decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy,
         _ body: (UnsafeMutablePointer<MessagePackEncoderState>) throws -> R
     ) rethrows -> R {
         try withUnsafeTemporaryAllocation(byteCount: MessagePackOutputBuffer.initialCapacity, alignment: 8) { output in
@@ -94,6 +118,7 @@ struct MessagePackEncoderState {
                 try withUnsafeTemporaryAllocation(of: MessagePackEncodingPath.Node.self, capacity: 16) { pathNodes in
                     var state = MessagePackEncoderState(
                         userInfo: userInfo,
+                        decimalEncodingStrategy: decimalEncodingStrategy,
                         buffer: MessagePackOutputBuffer(memory: output),
                         openContainers: MessagePackStack(memory: openContainers),
                         pathNodes: MessagePackStack(memory: pathNodes)
@@ -150,6 +175,7 @@ struct MessagePackEncoderImpl {
     let state: UnsafeMutablePointer<MessagePackEncoderState>
 
     var userInfo: [CodingUserInfoKey: Any] { state.pointee.userInfo }
+    var decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy { state.pointee.decimalEncodingStrategy }
 
     // MARK: Coding paths
 
@@ -263,7 +289,8 @@ struct MessagePackEncoderImpl {
     /// What ``encodeNative(_:_:)`` did with a value.
     enum NativeEncoding {
         case encoded
-        /// The type is not natively represented.
+        /// The type is not natively represented, or is a `Decimal` deferring
+        /// to its own conformance.
         case notNative
         /// A `Date` outside the timestamp range.
         case unrepresentableDate
@@ -272,7 +299,7 @@ struct MessagePackEncoderImpl {
     /// Writes the value at `value` if its type is natively represented.
     ///
     /// Out of line and not generic: one copy of the type checks, and no
-    /// resilient `Date` in the generic `encode`, which would
+    /// resilient `Date` or `Decimal` in the generic `encode`, which would
     /// otherwise size its frame (and probe the stack) on every call. Types
     /// are matched by metadata identity and read through the raw pointer: an
     /// `as!` per type reserves a stack temporary per cast site, and a
@@ -323,6 +350,8 @@ struct MessagePackEncoderImpl {
             state.pointee.buffer.writeTimestamp(value.load(as: MessagePackTimestamp.self))
         } else if let collectionType = MessagePackCollectionType(type) {
             encodeCollection(collectionType, value)
+        } else if type == foundation.decimal, decimalEncodingStrategy == .string {
+            encodeDecimal(value)
         } else {
             return .notNative
         }
@@ -330,9 +359,9 @@ struct MessagePackEncoderImpl {
         return .encoded
     }
 
-    // `Date` is written out of line, keeping this resilient type out of the
-    // frame of `encodeNative`, which every struct passes through: in it,
-    // it made each call probe the stack (`chkstk`).
+    // `Date` and `Decimal` are written out of line, keeping these resilient
+    // types out of the frame of `encodeNative`, which every struct passes
+    // through: in it, they made each call probe the stack (`chkstk`).
 
     /// Writes the `Date` at `value`, or returns false if the timestamp range
     /// cannot hold it.
@@ -343,6 +372,12 @@ struct MessagePackEncoderImpl {
         }
         state.pointee.buffer.writeTimestamp(timestamp)
         return true
+    }
+
+    /// Writes the `Decimal` at `value` as a string of its exact digits.
+    @inline(never)
+    private func encodeDecimal(_ value: UnsafeRawPointer) {
+        state.pointee.buffer.writeString(value.assumingMemoryBound(to: Decimal.self).pointee.description)
     }
 
     /// Encodes a value through its `Encodable` conformance, with an encoder
