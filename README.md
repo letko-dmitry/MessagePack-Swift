@@ -225,9 +225,11 @@ Neither direction materializes a `MessagePackValue` tree:
   scalar types (`[Int]`, `[String]`, `[Double]`, …) additionally bypass the
   unkeyed-container machinery entirely: a tight loop reads or writes the
   elements against the raw buffer, which puts them at macro-route speed —
-  including when they appear as fields of a decoded struct. These array
-  types are recognized by one out-of-line lookup of cached type
-  identifiers, so every other value pays a single call for it.
+  including when they appear as fields of a decoded struct. String-keyed
+  dictionaries of strings, integers, doubles, and bools (`[String: Int]`, …)
+  take the same kind of loop. These collection types are recognized by one
+  out-of-line lookup of cached type identifiers, so every other value pays
+  a single call for it.
 - Hot paths avoid allocation: index coding keys build their `stringValue`
   lazily, coding paths are only materialized for errors and nested
   containers, decode primitives report failures via typed throws and attach

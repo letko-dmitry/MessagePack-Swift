@@ -32,6 +32,14 @@ extension MessagePackEncoderImpl {
             encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt8].self).pointee) { $0.writeUInt(UInt64($1)) }
         case .uIntArray:
             encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt].self).pointee) { $0.writeUInt(UInt64($1)) }
+        case .intDictionary:
+            encodePrimitiveDictionary(raw.assumingMemoryBound(to: [String: Int].self).pointee) { $0.writeInt(Int64($1)) }
+        case .stringDictionary:
+            encodePrimitiveDictionary(raw.assumingMemoryBound(to: [String: String].self).pointee) { $0.writeString($1) }
+        case .doubleDictionary:
+            encodePrimitiveDictionary(raw.assumingMemoryBound(to: [String: Double].self).pointee) { $0.writeDouble($1) }
+        case .boolDictionary:
+            encodePrimitiveDictionary(raw.assumingMemoryBound(to: [String: Bool].self).pointee) { $0.writeBool($1) }
         }
     }
 
@@ -52,6 +60,22 @@ extension MessagePackEncoderImpl {
         // (retaining a string's storage) for the write.
         for index in array.indices {
             write(&state.pointee.buffer, array[index])
+        }
+    }
+
+    /// Writes a string-keyed dictionary of a natively represented value
+    /// type with a tight loop, like ``encodePrimitiveArray(_:_:)``. Entries
+    /// come in the dictionary's iteration order, as from
+    /// `Dictionary.encode(to:)`, so the output is byte-identical to the
+    /// keyed-container route. Out of line for the same reason as the arrays.
+    @inline(never)
+    private func encodePrimitiveDictionary<V>(
+        _ dictionary: [String: V], _ write: (inout MessagePackScratchBuffer, V) -> Void
+    ) {
+        state.pointee.buffer.writeMapHeader(count: dictionary.count)
+        for (key, value) in dictionary {
+            state.pointee.buffer.writeString(key)
+            write(&state.pointee.buffer, value)
         }
     }
 }

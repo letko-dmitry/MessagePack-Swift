@@ -473,7 +473,7 @@ enum MessagePackDecoding {
             return try readScalarOrRewind(MessagePackTimestamp.self, &parser, startOffset, codingPath, readTimestamp) as! T
         }
         if let collectionType = MessagePackCollectionType(ObjectIdentifier(T.self)) {
-            return try decodeCollection(collectionType, type, parser: &parser, codingPath: codingPath)
+            return try decodeCollection(collectionType, type, parser: &parser, context: context, codingPath: codingPath)
         }
         // The default strategy, `.deferredToDecimal` alone, is what
         // `Decimal`'s own conformance reads below.
