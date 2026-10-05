@@ -80,9 +80,11 @@ extension MessagePackSerializer {
     /// conformances always write a map).
     @inlinable
     public static func serialize<T: MessagePackSerializable>(_ value: T) -> Data {
-        var writer = MessagePackWriter(initialCapacity: 1024)
-        value.serialize(into: &writer)
-        return writer.finish()
+        withUnsafeTemporaryAllocation(byteCount: MessagePackOutputBuffer.initialCapacity, alignment: 8) { memory in
+            var writer = MessagePackWriter(memory: memory)
+            value.serialize(into: &writer)
+            return writer.finish()
+        }
     }
 
     /// Deserializes MessagePack binary data into a ``MessagePackSerializable``

@@ -189,7 +189,7 @@ struct CodableRoundTripTests {
     }
 
     @Test func moreThan15Keys() throws {
-        // Forces a map 16 header, exercising header compaction.
+        // Forces a map 16 header.
         let dict = Dictionary(uniqueKeysWithValues: (0..<100).map { ("key\($0)", $0) })
         try roundTrip(dict)
     }
@@ -200,7 +200,7 @@ struct CodableRoundTripTests {
 @Suite("Codable interop with serializer")
 struct CodableInteropTests {
     @Test func encoderOutputMatchesSerializer() throws {
-        // The encoder's compacted output must be byte-identical to the
+        // The encoder's output must be byte-identical to the
         // serializer's smallest-format encoding of the equivalent tree.
         let encoded = try MessagePackEncoder().encode([1, 500, -3])
         let serialized = try MessagePackSerializer.serialize(

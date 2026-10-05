@@ -3,11 +3,12 @@ import Foundation
 /// Encodes `Encodable` values into MessagePack binary data, analogous to
 /// `JSONEncoder`.
 ///
-/// Values are written in a single streaming pass into a growable buffer;
-/// container headers (whose element counts are unknown up front) are reserved
-/// at full width and compacted to the smallest spec format when encoding
-/// finishes, so the output is byte-identical to what
-/// ``MessagePackSerializer`` produces for the equivalent value tree.
+/// Values are written in a single streaming pass straight into the output.
+/// A container's header is written as a fixmap or fixarray when it opens and
+/// keeps the running entry count itself, widening in place to the 16- or
+/// 32-bit format if the container outgrows it, so the output is
+/// byte-identical to what ``MessagePackSerializer`` produces for the
+/// equivalent value tree.
 ///
 /// Special types:
 /// - `Date` is encoded as the timestamp extension type (-1). Dates whose
@@ -25,6 +26,10 @@ import Foundation
 /// corrupt output. A `superEncoder()` that is never encoded into simply
 /// contributes nothing (its entry is written lazily on first use).
 ///
+/// The `Encoder` and containers handed to `encode(to:)` are valid only while
+/// ``encode(_:)`` runs, as they write into state on the call's stack; a
+/// conformance must not store them for later use.
+///
 /// Like `JSONEncoder`, this type is marked `Sendable` with unchecked
 /// conformance: it has value semantics, but values stored in `userInfo` must
 /// themselves be `Sendable` for cross-task sharing to be safe.
@@ -41,10 +46,16 @@ public struct MessagePackEncoder {
     /// encodes nothing, since MessagePack has no representation for "no
     /// value".
     public func encode<T: Encodable>(_ value: T) throws -> Data {
-        let impl = MessagePackEncoderImpl(userInfo: userInfo)
-        defer { impl.tearDown() }
-        try impl.encodeEncodable(value, codingPath: [])
-        return impl.finalize()
+        try MessagePackEncoderState.with(userInfo: userInfo) { state in
+            do {
+                try MessagePackEncoderImpl(state: state).encode(value, path: .root)
+            } catch {
+                state.pointee.buffer.deallocate()
+                throw error
+            }
+
+            return state.pointee.buffer.finish()
+        }
     }
 }
 
@@ -56,329 +67,367 @@ extension MessagePackEncoder: @unchecked Sendable {}
 /// the per-element hot path bypasses dynamic exclusivity enforcement on
 /// class properties.
 struct MessagePackEncoderState {
-    var buffer = MessagePackScratchBuffer()
+    let userInfo: [CodingUserInfoKey: Any]
 
-    /// Stack of header positions of containers that are still open for
-    /// writing. A write to a container pops any nested containers above it
-    /// (they are implicitly closed); a write to a container that is no
-    /// longer on the stack is an out-of-order write and traps.
-    var openContainers: [Int] = []
+    var buffer: MessagePackOutputBuffer
 
-    /// Per-`_MessagePackEncoder` record of the container it created, so
-    /// repeated `container(keyedBy:)` / `unkeyedContainer()` calls on the
-    /// same encoder merge into one container instead of emitting siblings,
-    /// and so encoding a second value for the same slot is detected.
-    /// `0` = none; `position + 1` = keyed; `-(position + 1)` = unkeyed;
-    /// `singleValueWrittenMarker` = a single value was already written.
-    var encoderSlots: [Int] = []
+    /// The header positions of the containers still open for writing,
+    /// innermost (and highest) last. A write to a container closes the
+    /// containers opened after it; a write to a container no longer here is
+    /// an out-of-order write and traps.
+    var openContainers: MessagePackStack<Int>
 
-    /// Slot marker meaning "a single value was already encoded for this
-    /// encoder" (distinct from any container position encoding).
-    static let singleValueWrittenMarker = Int.min
+    /// The nodes of the coding paths in use; see ``MessagePackEncodingPath``.
+    var pathNodes: MessagePackStack<MessagePackEncodingPath.Node>
 
-    @inline(__always)
-    mutating func makeEncoderSlot() -> Int {
-        encoderSlots.append(0)
-        return encoderSlots.count - 1
-    }
+    /// Runs `body` with the state of one `encode` call. The state lives in
+    /// this frame, as the encoder (and every container it serves) is only
+    /// valid during the call, and so does the memory of its buffer and
+    /// stacks until they outgrow it: a typical message is encoded without
+    /// allocating any of them.
+    static func with<R>(
+        userInfo: [CodingUserInfoKey: Any],
+        _ body: (UnsafeMutablePointer<MessagePackEncoderState>) throws -> R
+    ) rethrows -> R {
+        try withUnsafeTemporaryAllocation(byteCount: MessagePackOutputBuffer.initialCapacity, alignment: 8) { output in
+            try withUnsafeTemporaryAllocation(of: Int.self, capacity: 32) { openContainers in
+                try withUnsafeTemporaryAllocation(of: MessagePackEncodingPath.Node.self, capacity: 16) { pathNodes in
+                    var state = MessagePackEncoderState(
+                        userInfo: userInfo,
+                        buffer: MessagePackOutputBuffer(memory: output),
+                        openContainers: MessagePackStack(memory: openContainers),
+                        pathNodes: MessagePackStack(memory: pathNodes)
+                    )
+                    defer {
+                        state.openContainers.deallocate()
+                        state.pathNodes.deallocate()
+                    }
 
-    /// Records that the encoder's single value was written; traps if a
-    /// value or container was already encoded for it, mirroring
-    /// `JSONEncoder`'s precondition for the same misuse.
-    @inline(__always)
-    mutating func markSingleValueWritten(id: Int) {
-        precondition(
-            encoderSlots[id] == 0,
-            "Attempt to encode a second value (or a value after a container) through a single value encoding container"
-        )
-        encoderSlots[id] = Self.singleValueWrittenMarker
-    }
-
-    /// Registers one new entry in the container at `position`, closing any
-    /// nested containers opened after it. Returns false if that container
-    /// itself has already been closed (out-of-order write).
-    @inline(__always)
-    mutating func beginEntry(at position: Int) -> Bool {
-        if openContainers.last == position {
-            buffer.bumpContainerCount(at: position)
-            return true
+                    return try withUnsafeMutablePointer(to: &state, body)
+                }
+            }
         }
-        return beginEntrySlow(at: position)
+    }
+}
+
+// MARK: - Coding paths
+
+/// A coding path of the encoder: the index of its last key in
+/// ``MessagePackEncoderState/pathNodes``, each node linking to its parent.
+///
+/// A nested value's node is pushed when the value gets an encoder of its own
+/// and popped once the value is encoded, along with the nodes of its nested
+/// containers (kept until then, so a closed nested container still reports
+/// its own path), so a path costs a store into memory of the `encode` call,
+/// where a linked list costs an allocation per value. A stale path
+/// (one kept past its value, against the documented rules) reads keys of
+/// other values, never freed memory.
+struct MessagePackEncodingPath {
+    struct Node {
+        let parent: Int
+        let key: any CodingKey
     }
 
-    @inline(never)
-    private mutating func beginEntrySlow(at position: Int) -> Bool {
-        while let top = openContainers.last, top != position {
-            openContainers.removeLast()
-        }
-        guard openContainers.last == position else { return false }
-        buffer.bumpContainerCount(at: position)
-        return true
-    }
+    static let root = Self(node: -1)
+
+    let node: Int
 }
 
 // MARK: - Shared encoder state
 
-final class MessagePackEncoderImpl {
-    /// A container header reserved in the scratch buffer, patched at the end.
-    /// The running element count lives in the reserved bytes themselves.
-    struct ContainerHeader {
-        let position: Int
-        let isMap: Bool
-    }
+private let outOfOrderWriteMessage = """
+    Attempt to encode into a MessagePack container after writes to its parent \
+    closed it. Nested containers and superEncoder() values must be fully \
+    encoded before their parent container continues.
+    """
 
-    /// The mutable encoding state. Owned by this instance; released by
-    /// `tearDown()`.
+/// The encoding machinery shared by every encoder and container of one
+/// `encode` call: a single pointer to the state, so copying it into each of
+/// them costs no reference counting, and creating it no allocation.
+struct MessagePackEncoderImpl {
+    /// The mutable encoding state, in the frame of
+    /// ``MessagePackEncoder/encode(_:)``.
     let state: UnsafeMutablePointer<MessagePackEncoderState>
-    var headers: [ContainerHeader] = []
-    let userInfo: [CodingUserInfoKey: Any]
 
-    init(userInfo: [CodingUserInfoKey: Any]) {
-        self.state = .allocate(capacity: 1)
-        self.state.initialize(to: MessagePackEncoderState())
-        self.userInfo = userInfo
+    var userInfo: [CodingUserInfoKey: Any] { state.pointee.userInfo }
+
+    // MARK: Coding paths
+
+    func path(_ parent: MessagePackEncodingPath, appending key: some CodingKey) -> MessagePackEncodingPath {
+        state.pointee.pathNodes.append(MessagePackEncodingPath.Node(parent: parent.node, key: key))
+        return MessagePackEncodingPath(node: state.pointee.pathNodes.count &- 1)
     }
 
-    /// Releases the encoding state. Must be called exactly once, after
-    /// encoding finishes (successfully or not).
-    func tearDown() {
-        state.pointee.buffer.deallocate()
-        state.deinitialize(count: 1)
-        state.deallocate()
+    func path(_ parent: MessagePackEncodingPath, appendingIndex index: Int) -> MessagePackEncodingPath {
+        path(parent, appending: MessagePackCodingKey(intValue: index))
     }
 
-    /// Reserves a header slot for a new container and returns its buffer
-    /// position, which identifies the container for count bookkeeping.
-    func beginContainer(isMap: Bool) -> Int {
-        let position = state.pointee.buffer.reserveContainerHeader()
+    /// The keys of `path`, built only for errors and `codingPath` reads.
+    func codingPath(_ path: MessagePackEncodingPath) -> [CodingKey] {
+        var keys: [CodingKey] = []
+        var node = path.node
+        while node >= 0 {
+            let entry = state.pointee.pathNodes[node]
+            keys.append(entry.key)
+            node = entry.parent
+        }
+        return keys.reversed()
+    }
+
+    // MARK: Containers
+
+    /// Opens a container at the current position, writing its header as an
+    /// empty fixmap or fixarray, and returns the header's position, which
+    /// identifies the container from then on.
+    func openContainer(isMap: Bool) -> Int {
+        let position = state.pointee.buffer.offset
+        state.pointee.buffer.writeByte(isMap ? 0x80 : 0x90)
         state.pointee.openContainers.append(position)
-        headers.append(ContainerHeader(position: position, isMap: isMap))
         return position
     }
 
-    /// Encodes a value of arbitrary `Encodable` type. Types MessagePack
-    /// represents natively are written directly, bypassing the `Encodable`
-    /// container machinery (and its per-value encoder and coding-path
-    /// allocations); the path closure only runs when a value actually needs
-    /// it (nested encoders and errors).
-    ///
-    /// Native types are matched by metadata equality and then read through
-    /// one shared pointer to `value`. Two alternatives measured worse:
-    /// `as!` in every branch makes the compiler reserve a dynamically sized
-    /// stack temporary per cast site in the entry block, probing the stack
-    /// (`chkstk`) 22 times on every call (~7% of encoding time); a single
-    /// conditional cast to an internal protocol replaces that with
-    /// `swift_conformsToProtocol` plus existential `tryCast`, which is
-    /// slower than this whole chain of pointer-equality checks.
-    func encodeEncodable<T: Encodable>(
-        _ value: T, codingPath: @autoclosure () -> [CodingKey]
-    ) throws {
-        try withUnsafePointer(to: value) { pointer in
-            let raw = UnsafeRawPointer(pointer)
-            if T.self == String.self {
-                state.pointee.buffer.writeString(raw.assumingMemoryBound(to: String.self).pointee)
-            } else if T.self == Int.self {
-                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int.self).pointee))
-            } else if T.self == Bool.self {
-                state.pointee.buffer.writeBool(raw.assumingMemoryBound(to: Bool.self).pointee)
-            } else if T.self == Double.self {
-                state.pointee.buffer.writeDouble(raw.assumingMemoryBound(to: Double.self).pointee)
-            } else if T.self == Float.self {
-                state.pointee.buffer.writeFloat(raw.assumingMemoryBound(to: Float.self).pointee)
-            } else if T.self == Int64.self {
-                state.pointee.buffer.writeInt(raw.assumingMemoryBound(to: Int64.self).pointee)
-            } else if T.self == UInt64.self {
-                state.pointee.buffer.writeUInt(raw.assumingMemoryBound(to: UInt64.self).pointee)
-            } else if T.self == Int32.self {
-                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int32.self).pointee))
-            } else if T.self == UInt32.self {
-                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt32.self).pointee))
-            } else if T.self == Int16.self {
-                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int16.self).pointee))
-            } else if T.self == UInt16.self {
-                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt16.self).pointee))
-            } else if T.self == Int8.self {
-                state.pointee.buffer.writeInt(Int64(raw.assumingMemoryBound(to: Int8.self).pointee))
-            } else if T.self == UInt8.self {
-                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt8.self).pointee))
-            } else if T.self == UInt.self {
-                state.pointee.buffer.writeUInt(UInt64(raw.assumingMemoryBound(to: UInt.self).pointee))
-            } else if T.self == [Int].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int].self).pointee) { $0.writeInt(Int64($1)) }
-            } else if T.self == [String].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [String].self).pointee) { $0.writeString($1) }
-            } else if T.self == [Double].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Double].self).pointee) { $0.writeDouble($1) }
-            } else if T.self == [Bool].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Bool].self).pointee) { $0.writeBool($1) }
-            } else if T.self == [Float].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Float].self).pointee) { $0.writeFloat($1) }
-            } else if T.self == [Int64].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int64].self).pointee) { $0.writeInt($1) }
-            } else if T.self == [UInt64].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt64].self).pointee) { $0.writeUInt($1) }
-            } else if T.self == [Int32].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int32].self).pointee) { $0.writeInt(Int64($1)) }
-            } else if T.self == [UInt32].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt32].self).pointee) { $0.writeUInt(UInt64($1)) }
-            } else if T.self == [Int16].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int16].self).pointee) { $0.writeInt(Int64($1)) }
-            } else if T.self == [UInt16].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt16].self).pointee) { $0.writeUInt(UInt64($1)) }
-            } else if T.self == [Int8].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [Int8].self).pointee) { $0.writeInt(Int64($1)) }
-            } else if T.self == [UInt8].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt8].self).pointee) { $0.writeUInt(UInt64($1)) }
-            } else if T.self == [UInt].self {
-                encodePrimitiveArray(raw.assumingMemoryBound(to: [UInt].self).pointee) { $0.writeUInt(UInt64($1)) }
-            } else if T.self == Date.self {
-                let date = raw.assumingMemoryBound(to: Date.self).pointee
-                guard let timestamp = MessagePackTimestamp(exactly: date) else {
-                    throw EncodingError.invalidValue(
-                        value,
-                        EncodingError.Context(
-                            codingPath: codingPath(),
-                            debugDescription:
-                                "Date (timeIntervalSince1970: \(date.timeIntervalSince1970)) cannot be represented as a MessagePack timestamp"
-                        ))
-                }
-                state.pointee.buffer.writeExt(type: MessagePackTimestamp.extType, data: timestamp.data)
-            } else if T.self == Data.self {
-                state.pointee.buffer.writeBinary(raw.assumingMemoryBound(to: Data.self).pointee)
-            } else if T.self == MessagePackTimestamp.self {
-                let timestamp = raw.assumingMemoryBound(to: MessagePackTimestamp.self).pointee
-                state.pointee.buffer.writeExt(type: MessagePackTimestamp.extType, data: timestamp.data)
-            } else {
-                let path = codingPath()
-                let before = state.pointee.buffer.offset
-                try value.encode(to: _MessagePackEncoder(impl: self, codingPath: path))
-                if state.pointee.buffer.offset == before {
-                    // MessagePack has no representation for "no value at all";
-                    // JSONEncoder throws in the same situation.
-                    throw EncodingError.invalidValue(
-                        value,
-                        EncodingError.Context(
-                            codingPath: path,
-                            debugDescription: "Value of type \(T.self) did not encode any values"
-                        ))
-                }
-            }
-        }
-    }
-
-    /// Writes an array of a natively represented element type with a tight
-    /// loop, bypassing the unkeyed-container machinery. The count is known up
-    /// front, so the header is written at its final width directly — no
-    /// reserved header to compact in `finalize()`.
+    /// Counts one more entry in the container at `position`, whose key (or
+    /// element) the caller writes next, closing the containers opened after
+    /// it.
     @inline(__always)
-    private func encodePrimitiveArray<E>(
-        _ array: [E], _ write: (inout MessagePackScratchBuffer, E) -> Void
-    ) {
-        state.pointee.buffer.writeArrayHeader(count: array.count)
-        for element in array {
-            write(&state.pointee.buffer, element)
+    func beginEntry(in position: Int) {
+        if state.pointee.openContainers.last != position {
+            closeContainers(above: position)
+        }
+        state.pointee.buffer.incrementContainerCount(at: position)
+    }
+
+    /// Closes the containers opened after the one at `position`, trapping if
+    /// that one has itself been closed: its entry would land after bytes of
+    /// its parent.
+    @inline(never)
+    private func closeContainers(above position: Int) {
+        closeContainers(from: position + 1)
+        precondition(state.pointee.openContainers.last == position, outOfOrderWriteMessage)
+    }
+
+    /// Closes the containers whose headers are at `position` or after it.
+    @inline(__always)
+    func closeContainers(from position: Int) {
+        while let top = state.pointee.openContainers.last, top >= position {
+            state.pointee.openContainers.removeLast()
         }
     }
 
-    /// Produces the final `Data`, compacting each reserved 5-byte container
-    /// header to the smallest format for its final count.
-    func finalize() -> Data {
-        var finalSize = state.pointee.buffer.offset
-        for header in headers {
-            let count = state.pointee.buffer.containerCount(at: header.position)
-            finalSize -= 5 - MessagePackScratchBuffer.containerHeaderSize(count: count)
-        }
-        let out = UnsafeMutableRawPointer.allocate(byteCount: max(finalSize, 1), alignment: 8)
-        var writer = MessagePackSerializer.Writer(base: out)
-        var source = 0
-        for header in headers {
-            let chunk = header.position - source
-            if chunk > 0 {
-                writer.writeBytes(state.pointee.buffer.base + source, count: chunk)
-            }
-            source = header.position + 5
-            let count = state.pointee.buffer.containerCount(at: header.position)
-            if header.isMap {
-                writer.writeMapHeader(count: count)
-            } else {
-                writer.writeArrayHeader(count: count)
-            }
-        }
-        let tail = state.pointee.buffer.offset - source
-        if tail > 0 {
-            writer.writeBytes(state.pointee.buffer.base + source, count: tail)
-        }
-        assert(writer.offset == finalSize)
-        return Data(
-            bytesNoCopy: out,
-            count: finalSize,
-            deallocator: .custom { pointer, _ in pointer.deallocate() }
+    /// Checks a repeated container request for the value starting at
+    /// `position`, whose container is reused (`JSONEncoder` merges repeated
+    /// requests too). Traps unless that container is still open and of the
+    /// requested kind: anything else at `position` is a value already
+    /// encoded through a single value container, whose containers closed
+    /// when it was done.
+    @inline(never)
+    func checkReusedContainer(at position: Int, isMap: Bool) {
+        precondition(
+            state.pointee.openContainers.lastIndex(where: { $0 == position }) != nil,
+            "Attempt to request an encoding container for a value that was already encoded through a single value container"
         )
+        let existingIsMap = state.pointee.buffer.isMapHeader(at: position)
+        precondition(
+            existingIsMap == isMap,
+            "Attempt to request a \(isMap ? "keyed" : "unkeyed") encoding container for a value that already requested a \(existingIsMap ? "keyed" : "unkeyed") one"
+        )
+    }
+
+    // MARK: Values
+
+    /// Encodes a value of any `Encodable` type. Types MessagePack represents
+    /// natively are written directly, bypassing the `Encodable` container
+    /// machinery (and its per-value encoder and coding-path node);
+    /// the path closure only runs when a value actually needs it (nested
+    /// encoders and errors).
+    ///
+    /// Thin, as the compiler copies a function taking a closure into each
+    /// call site: the type checks run out of line in
+    /// ``encodeNative(_:_:)``.
+    func encode<T: Encodable>(_ value: T, path: @autoclosure () -> MessagePackEncodingPath) throws {
+        switch withUnsafePointer(to: value, { encodeNative(T.self, UnsafeRawPointer($0)) }) {
+        case .encoded:
+            return
+        case .notNative:
+            // Drops the value's path node, and those of its nested
+            // containers, once the value is encoded.
+            let pathNodeCount = state.pointee.pathNodes.count
+            defer { state.pointee.pathNodes.removeAll(from: pathNodeCount) }
+
+            try encodeWithContainers(value, path: path())
+        case .unrepresentableDate:
+            throw Self.unrepresentableDate(value, codingPath: codingPath(path()))
+        }
+    }
+
+    /// What ``encodeNative(_:_:)`` did with a value.
+    enum NativeEncoding {
+        case encoded
+        /// The type is not natively represented.
+        case notNative
+        /// A `Date` outside the timestamp range.
+        case unrepresentableDate
+    }
+
+    /// Writes the value at `value` if its type is natively represented.
+    ///
+    /// Out of line and not generic: one copy of the type checks, and no
+    /// resilient `Date` in the generic `encode`, which would
+    /// otherwise size its frame (and probe the stack) on every call. Types
+    /// are matched by metadata identity and read through the raw pointer: an
+    /// `as!` per type reserves a stack temporary per cast site, and a
+    /// conditional cast to a protocol costs `swift_conformsToProtocol`, more
+    /// than this whole chain of comparisons.
+    @inline(never)
+    func encodeNative(_ type: Any.Type, _ value: UnsafeRawPointer) -> NativeEncoding {
+        let foundation = MessagePackFoundationTypes.shared
+        let type = ObjectIdentifier(type)
+
+        // The types seen most in generic contexts first: every struct passes
+        // all of these checks before its own conformance runs.
+        if type == ObjectIdentifier(String.self) {
+            state.pointee.buffer.writeString(value.assumingMemoryBound(to: String.self).pointee)
+        } else if type == foundation.data {
+            state.pointee.buffer.writeBinary(value.assumingMemoryBound(to: Data.self).pointee)
+        } else if type == ObjectIdentifier(Int.self) {
+            state.pointee.buffer.writeIntOutlined(Int64(value.load(as: Int.self)))
+        } else if type == foundation.date {
+            guard encodeDate(value) else {
+                return .unrepresentableDate
+            }
+        } else if type == ObjectIdentifier(Double.self) {
+            state.pointee.buffer.writeDouble(value.load(as: Double.self))
+        } else if type == ObjectIdentifier(Bool.self) {
+            state.pointee.buffer.writeBool(value.load(as: Bool.self))
+        } else if type == ObjectIdentifier(Float.self) {
+            state.pointee.buffer.writeFloat(value.load(as: Float.self))
+        } else if type == ObjectIdentifier(Int64.self) {
+            state.pointee.buffer.writeIntOutlined(value.load(as: Int64.self))
+        } else if type == ObjectIdentifier(UInt64.self) {
+            state.pointee.buffer.writeUIntOutlined(value.load(as: UInt64.self))
+        } else if type == ObjectIdentifier(Int32.self) {
+            state.pointee.buffer.writeIntOutlined(Int64(value.load(as: Int32.self)))
+        } else if type == ObjectIdentifier(UInt32.self) {
+            state.pointee.buffer.writeUIntOutlined(UInt64(value.load(as: UInt32.self)))
+        } else if type == ObjectIdentifier(Int16.self) {
+            state.pointee.buffer.writeIntOutlined(Int64(value.load(as: Int16.self)))
+        } else if type == ObjectIdentifier(UInt16.self) {
+            state.pointee.buffer.writeUIntOutlined(UInt64(value.load(as: UInt16.self)))
+        } else if type == ObjectIdentifier(Int8.self) {
+            state.pointee.buffer.writeIntOutlined(Int64(value.load(as: Int8.self)))
+        } else if type == ObjectIdentifier(UInt8.self) {
+            state.pointee.buffer.writeUIntOutlined(UInt64(value.load(as: UInt8.self)))
+        } else if type == ObjectIdentifier(UInt.self) {
+            state.pointee.buffer.writeUIntOutlined(UInt64(value.load(as: UInt.self)))
+        } else if type == ObjectIdentifier(MessagePackTimestamp.self) {
+            state.pointee.buffer.writeTimestamp(value.load(as: MessagePackTimestamp.self))
+        } else {
+            return .notNative
+        }
+
+        return .encoded
+    }
+
+    // `Date` is written out of line, keeping this resilient type out of the
+    // frame of `encodeNative`, which every struct passes through: in it,
+    // it made each call probe the stack (`chkstk`).
+
+    /// Writes the `Date` at `value`, or returns false if the timestamp range
+    /// cannot hold it.
+    @inline(never)
+    private func encodeDate(_ value: UnsafeRawPointer) -> Bool {
+        guard let timestamp = MessagePackTimestamp(exactly: value.load(as: Date.self)) else {
+            return false
+        }
+        state.pointee.buffer.writeTimestamp(timestamp)
+        return true
+    }
+
+    /// Encodes a value through its `Encodable` conformance, with an encoder
+    /// for the value starting at the current position.
+    func encodeWithContainers<T: Encodable>(_ value: T, path: MessagePackEncodingPath) throws {
+        let start = state.pointee.buffer.offset
+        try value.encode(to: _MessagePackEncoder(impl: self, path: path, start: start))
+
+        // MessagePack has no representation for "no value at all";
+        // JSONEncoder throws in the same situation.
+        guard state.pointee.buffer.offset != start else {
+            throw Self.nothingEncoded(value, codingPath: codingPath(path))
+        }
+
+        // The value is complete, so are its containers: closing them here
+        // lets the parent's next entry find its container on top, and turns
+        // any later write into them into an out-of-order write.
+        closeContainers(from: start)
+    }
+
+    // MARK: Errors
+
+    // Built out of line and returned boxed: a resilient `EncodingError` (or
+    // `Date`) in a function sizes its frame dynamically on every call, even
+    // when the throwing branch is not taken.
+
+    @inline(never)
+    static func unrepresentableDate(_ value: Any, codingPath: [CodingKey]) -> any Error {
+        let interval = (value as? Date)?.timeIntervalSince1970 ?? .nan
+        return EncodingError.invalidValue(
+            value,
+            EncodingError.Context(
+                codingPath: codingPath,
+                debugDescription:
+                    "Date (timeIntervalSince1970: \(interval)) cannot be represented as a MessagePack timestamp"
+            ))
+    }
+
+    @inline(never)
+    static func nothingEncoded(_ value: Any, codingPath: [CodingKey]) -> any Error {
+        EncodingError.invalidValue(
+            value,
+            EncodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "Value of type \(type(of: value)) did not encode any values"
+            ))
     }
 }
 
 // MARK: - Encoder
 
 /// The `Encoder` handed to `Encodable.encode(to:)`. A three-word struct
-/// (shared state + coding path + slot id) so passing it as an existential
-/// does not allocate.
+/// (shared state, coding path, start), so passing it as an existential does
+/// not allocate.
 struct _MessagePackEncoder: Encoder {
     let impl: MessagePackEncoderImpl
-    let codingPath: [CodingKey]
-    /// Index into `MessagePackEncoderState.encoderSlots`, used to merge
-    /// repeated container requests for the same value.
-    let id: Int
+    let path: MessagePackEncodingPath
+    /// Where the value of this encoder starts in the output. A value is one
+    /// single value or one container whose header is written at `start`, so
+    /// what the output holds there tells what has been encoded for it: no
+    /// per-encoder record is needed.
+    let start: Int
 
-    init(impl: MessagePackEncoderImpl, codingPath: [CodingKey]) {
-        self.impl = impl
-        self.codingPath = codingPath
-        self.id = impl.state.pointee.makeEncoderSlot()
-    }
-
+    var codingPath: [CodingKey] { impl.codingPath(path) }
     var userInfo: [CodingUserInfoKey: Any] { impl.userInfo }
-
-    /// Returns the header position for this value's container, creating it
-    /// on first request and reusing it on repeated requests (matching
-    /// `JSONEncoder`, which merges repeated same-kind container requests).
-    private func containerPosition(isMap: Bool) -> Int {
-        let slot = impl.state.pointee.encoderSlots[id]
-        if slot == 0 {
-            let position = impl.beginContainer(isMap: isMap)
-            impl.state.pointee.encoderSlots[id] = isMap ? position + 1 : -(position + 1)
-            return position
-        }
-        precondition(
-            slot != MessagePackEncoderState.singleValueWrittenMarker,
-            "Attempt to request an encoding container after a single value was already encoded for the same value"
-        )
-        let existingIsMap = slot > 0
-        precondition(
-            existingIsMap == isMap,
-            "Attempt to request a \(isMap ? "keyed" : "unkeyed") encoding container for a value that already requested a \(existingIsMap ? "keyed" : "unkeyed") one"
-        )
-        return existingIsMap ? slot - 1 : -slot - 1
-    }
 
     func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
         KeyedEncodingContainer(
-            MessagePackKeyedEncodingContainer(
-                impl: impl,
-                headerPosition: containerPosition(isMap: true),
-                codingPath: codingPath
-            )
+            MessagePackKeyedEncodingContainer(impl: impl, position: containerPosition(isMap: true), path: path)
         )
     }
 
     func unkeyedContainer() -> UnkeyedEncodingContainer {
-        MessagePackUnkeyedEncodingContainer(
-            impl: impl,
-            headerPosition: containerPosition(isMap: false),
-            codingPath: codingPath
-        )
+        MessagePackUnkeyedEncodingContainer(impl: impl, position: containerPosition(isMap: false), path: path)
     }
 
     func singleValueContainer() -> SingleValueEncodingContainer {
-        MessagePackSingleValueEncodingContainer(impl: impl, codingPath: codingPath, encoderID: id)
+        MessagePackSingleValueEncodingContainer(impl: impl, path: path, start: start)
+    }
+
+    /// The header position of this value's container: opened at `start` on
+    /// the first request, and the same one on later requests.
+    private func containerPosition(isMap: Bool) -> Int {
+        if impl.state.pointee.buffer.offset == start {
+            return impl.openContainer(isMap: isMap)
+        }
+        impl.checkReusedContainer(at: start, isMap: isMap)
+        return start
     }
 }
-

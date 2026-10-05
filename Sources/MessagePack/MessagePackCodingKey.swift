@@ -1,6 +1,7 @@
 import Foundation
 
-/// A generic coding key used for array indices and the `super` key.
+/// A generic coding key used for array indices, the `super` key, and keys
+/// built from wire strings.
 ///
 /// Index keys defer building their `stringValue` until it is actually read
 /// (error reporting), keeping hot encode/decode paths allocation-free. The
@@ -28,11 +29,13 @@ struct MessagePackCodingKey: CodingKey {
         }
     }
 
-    init?(stringValue: String) {
+    // Non-failable, which still satisfies the protocol's failable
+    // requirements: every string and every integer makes a valid key.
+    init(stringValue: String) {
         value = .string(stringValue)
     }
 
-    init?(intValue: Int) {
+    init(intValue: Int) {
         value = .index(intValue)
     }
 
@@ -40,5 +43,5 @@ struct MessagePackCodingKey: CodingKey {
         value = .index(index)
     }
 
-    static let `super` = MessagePackCodingKey(stringValue: "super")!
+    static let `super` = MessagePackCodingKey(stringValue: "super")
 }
