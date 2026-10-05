@@ -11,9 +11,13 @@ extension MessagePackDecoding {
         parser: inout Parser,
         codingPath: () -> [CodingKey]
     ) throws -> T {
+        // Only the `[Int]` loop inlines the integer read. The other integer
+        // loops call the shared out-of-line read: `[Int64]` and `[UInt64]`
+        // would inline code identical to `[Int]` and `[UInt]`, which the
+        // optimizer then merges into one function.
         switch collectionType {
         case .intArray:
-            return try primitiveArray(&parser, codingPath, readInteger) as [Int] as! T
+            return try primitiveArray(&parser, codingPath, readIntegerInlined) as [Int] as! T
         case .stringArray:
             return try primitiveArray(&parser, codingPath, readString) as [String] as! T
         case .doubleArray:
