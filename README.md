@@ -210,8 +210,9 @@ Neither direction materializes a `MessagePackValue` tree:
   A container's header (its count unknown up front) is written as a fixmap
   or fixarray and keeps the running count itself, widening in place to the
   16- or 32-bit format if the container outgrows it. The output buffer and
-  the stack of open containers start in the `encode` call's own stack
-  frame, so a typical message is encoded without allocating either.
+  the encoder's bookkeeping (open containers, coding-path nodes) start in
+  the `encode` call's own stack frame, so a typical message is encoded
+  without allocating any of them.
 - **Decoding** walks the raw bytes directly. A keyed container records its
   entries' byte offsets and key lengths as it scans, and matches coding keys
   with a length check and a `memcmp` against the wire bytes (no key
@@ -233,8 +234,10 @@ Neither direction materializes a `MessagePackValue` tree:
   out-of-line lookup of cached type identifiers, so every other value pays
   a single call for it.
 - Hot paths avoid allocation: index coding keys build their `stringValue`
-  lazily, coding paths are only materialized for errors and nested
-  containers, decode primitives report failures via typed throws and attach
+  lazily; the encoder's coding paths are nodes on a stack in the `encode`
+  call's frame, turned into `[CodingKey]` only for errors and `codingPath`
+  reads, and the decoder's are only materialized for errors and nested
+  containers; decode primitives report failures via typed throws and attach
   coding-path context only when an error actually propagates, and both
   coders keep their mutable state behind a pointer, bypassing dynamic
   exclusivity checks.

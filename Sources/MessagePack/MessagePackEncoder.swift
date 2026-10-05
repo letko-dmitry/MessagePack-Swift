@@ -74,7 +74,7 @@ public struct MessagePackEncoder {
         try MessagePackEncoderState.with(userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy) { state in
             let impl = MessagePackEncoderImpl(state: state)
             do {
-                try impl.encodeEncodable(value, codingPath: [])
+                try impl.encodeEncodable(value, path: .root)
             } catch {
                 state.pointee.buffer.deallocate()
                 throw error
@@ -103,6 +103,9 @@ struct MessagePackEncoderState {
     /// (they are implicitly closed); a write to a container that is no
     /// longer on the stack is an out-of-order write and traps.
     var openContainers: MessagePackStack<Int>
+
+    /// The nodes of the coding paths in use; see ``MessagePackEncodingPath``.
+    var pathNodes: MessagePackStack<MessagePackEncodingPath.Node>
 
     /// Per-`_MessagePackEncoder` record of the container it created, so
     /// repeated `container(keyedBy:)` / `unkeyedContainer()` calls on the
@@ -149,8 +152,8 @@ struct MessagePackEncoderState {
     /// Runs `body` with the state of one `encode` call. The state lives in
     /// this frame, as the encoder (and every container it serves) is only
     /// valid during the call, and so does the memory of its buffer and
-    /// container stack until they outgrow it: a typical message is encoded
-    /// without allocating either.
+    /// stacks until they outgrow it: a typical message is encoded without
+    /// allocating any of them.
     static func with<R>(
         userInfo: [CodingUserInfoKey: Any],
         decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy,
@@ -158,15 +161,21 @@ struct MessagePackEncoderState {
     ) rethrows -> R {
         try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) { output in
             try withUnsafeTemporaryAllocation(of: Int.self, capacity: 32) { openContainers in
-                var state = MessagePackEncoderState(
-                    userInfo: userInfo,
-                    decimalEncodingStrategy: decimalEncodingStrategy,
-                    buffer: MessagePackScratchBuffer(memory: output),
-                    openContainers: MessagePackStack(memory: openContainers)
-                )
-                defer { state.openContainers.deallocate() }
+                try withUnsafeTemporaryAllocation(of: MessagePackEncodingPath.Node.self, capacity: 16) { pathNodes in
+                    var state = MessagePackEncoderState(
+                        userInfo: userInfo,
+                        decimalEncodingStrategy: decimalEncodingStrategy,
+                        buffer: MessagePackScratchBuffer(memory: output),
+                        openContainers: MessagePackStack(memory: openContainers),
+                        pathNodes: MessagePackStack(memory: pathNodes)
+                    )
+                    defer {
+                        state.openContainers.deallocate()
+                        state.pathNodes.deallocate()
+                    }
 
-                return try withUnsafeMutablePointer(to: &state, body)
+                    return try withUnsafeMutablePointer(to: &state, body)
+                }
             }
         }
     }
@@ -182,6 +191,29 @@ struct MessagePackEncoderState {
     }
 }
 
+// MARK: - Coding paths
+
+/// A coding path of the encoder: the index of its last key in
+/// ``MessagePackEncoderState/pathNodes``, each node linking to its parent.
+///
+/// A nested value's node is pushed when the value gets an encoder of its own
+/// and popped once the value is encoded, along with the nodes of its nested
+/// containers (kept until then, so a closed nested container still reports
+/// its own path), so a path costs a store into memory of the `encode` call,
+/// where an array costs an allocation per value. A stale path (one kept past
+/// its value, against the documented rules) reads keys of other values,
+/// never freed memory.
+struct MessagePackEncodingPath {
+    struct Node {
+        let parent: Int
+        let key: any CodingKey
+    }
+
+    static let root = Self(node: -1)
+
+    let node: Int
+}
+
 // MARK: - Shared encoder state
 
 /// The encoding machinery shared by every encoder and container of one
@@ -194,6 +226,27 @@ struct MessagePackEncoderImpl {
 
     var userInfo: [CodingUserInfoKey: Any] { state.pointee.userInfo }
     var decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy { state.pointee.decimalEncodingStrategy }
+
+    func path(_ parent: MessagePackEncodingPath, appending key: some CodingKey) -> MessagePackEncodingPath {
+        state.pointee.pathNodes.append(MessagePackEncodingPath.Node(parent: parent.node, key: key))
+        return MessagePackEncodingPath(node: state.pointee.pathNodes.count &- 1)
+    }
+
+    func path(_ parent: MessagePackEncodingPath, appendingIndex index: Int) -> MessagePackEncodingPath {
+        path(parent, appending: MessagePackCodingKey(index: index))
+    }
+
+    /// The keys of `path`, built only for errors and `codingPath` reads.
+    func codingPath(_ path: MessagePackEncodingPath) -> [CodingKey] {
+        var keys: [CodingKey] = []
+        var node = path.node
+        while node >= 0 {
+            let entry = state.pointee.pathNodes[node]
+            keys.append(entry.key)
+            node = entry.parent
+        }
+        return keys.reversed()
+    }
 
     /// Opens a container: writes its header as a fixmap or fixarray, which
     /// counts (and widens) in place, and returns the header's position,
@@ -211,15 +264,20 @@ struct MessagePackEncoderImpl {
     /// allocations); the path closure only runs when a value actually needs
     /// it (nested encoders and errors).
     func encodeEncodable<T: Encodable>(
-        _ value: T, codingPath: @autoclosure () -> [CodingKey]
+        _ value: T, path: @autoclosure () -> MessagePackEncodingPath
     ) throws {
         switch withUnsafePointer(to: value, { encodeNative(T.self, UnsafeRawPointer($0)) }) {
         case .encoded:
             return
         case .notNative:
-            try encodeWithContainers(value, codingPath: codingPath())
+            // Drops the value's path node, and those of its nested
+            // containers, once the value is encoded.
+            let pathNodeCount = state.pointee.pathNodes.count
+            defer { state.pointee.pathNodes.removeAll(from: pathNodeCount) }
+
+            try encodeWithContainers(value, path: path())
         case .unrepresentableDate:
-            throw Self.unrepresentableDate(value, codingPath: codingPath())
+            throw Self.unrepresentableDate(value, codingPath: codingPath(path()))
         }
     }
 
@@ -319,13 +377,13 @@ struct MessagePackEncoderImpl {
     }
 
     /// Encodes a value through its `Encodable` conformance.
-    func encodeWithContainers<T: Encodable>(_ value: T, codingPath: [CodingKey]) throws {
+    func encodeWithContainers<T: Encodable>(_ value: T, path: MessagePackEncodingPath) throws {
         let before = state.pointee.buffer.offset
-        try value.encode(to: _MessagePackEncoder(impl: self, codingPath: codingPath))
+        try value.encode(to: _MessagePackEncoder(impl: self, path: path))
         // MessagePack has no representation for "no value at all";
         // JSONEncoder throws in the same situation.
         guard state.pointee.buffer.offset != before else {
-            throw Self.nothingEncoded(value, type: T.self, codingPath: codingPath)
+            throw Self.nothingEncoded(value, type: T.self, codingPath: codingPath(path))
         }
     }
 
@@ -363,16 +421,18 @@ struct MessagePackEncoderImpl {
 /// does not allocate.
 struct _MessagePackEncoder: Encoder {
     let impl: MessagePackEncoderImpl
-    let codingPath: [CodingKey]
+    let path: MessagePackEncodingPath
     /// Index into `MessagePackEncoderState.encoderSlots`, used to merge
     /// repeated container requests for the same value.
     let id: Int
 
-    init(impl: MessagePackEncoderImpl, codingPath: [CodingKey]) {
+    init(impl: MessagePackEncoderImpl, path: MessagePackEncodingPath) {
         self.impl = impl
-        self.codingPath = codingPath
+        self.path = path
         self.id = impl.state.pointee.makeEncoderSlot()
     }
+
+    var codingPath: [CodingKey] { impl.codingPath(path) }
 
     var userInfo: [CodingUserInfoKey: Any] { impl.userInfo }
 
@@ -403,7 +463,7 @@ struct _MessagePackEncoder: Encoder {
             MessagePackKeyedEncodingContainer(
                 impl: impl,
                 headerPosition: containerPosition(isMap: true),
-                codingPath: codingPath
+                path: path
             )
         )
     }
@@ -412,12 +472,12 @@ struct _MessagePackEncoder: Encoder {
         MessagePackUnkeyedEncodingContainer(
             impl: impl,
             headerPosition: containerPosition(isMap: false),
-            codingPath: codingPath
+            path: path
         )
     }
 
     func singleValueContainer() -> SingleValueEncodingContainer {
-        MessagePackSingleValueEncodingContainer(impl: impl, codingPath: codingPath, encoderID: id)
+        MessagePackSingleValueEncodingContainer(impl: impl, path: path, encoderID: id)
     }
 }
 

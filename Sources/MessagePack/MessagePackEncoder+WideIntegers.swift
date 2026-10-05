@@ -6,7 +6,7 @@ extension MessagePackEncoderImpl {
     /// value is known to fit, so a throw leaves no partial entry behind.
     func encodeWideInteger(
         _ value: some BinaryInteger,
-        codingPath: @autoclosure () -> [CodingKey],
+        path: @autoclosure () -> MessagePackEncodingPath,
         begin: () -> Void
     ) throws {
         if let signed = Int64(exactly: value) {
@@ -19,7 +19,7 @@ extension MessagePackEncoderImpl {
             throw EncodingError.invalidValue(
                 value,
                 EncodingError.Context(
-                    codingPath: codingPath(),
+                    codingPath: codingPath(path()),
                     debugDescription: "Number \(value) does not fit in a 64-bit MessagePack integer"
                 ))
         }

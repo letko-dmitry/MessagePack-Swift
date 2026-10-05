@@ -2,9 +2,9 @@
 /// frame through `withUnsafeTemporaryAllocation`, moving to the heap only
 /// when it outgrows that memory.
 ///
-/// The encoder keeps its open containers in one: a message nests a few
-/// levels deep, and an array for them costs an allocation (and its growth)
-/// on every `encode` call.
+/// The encoder keeps its open containers and coding-path nodes in two of
+/// them: a message nests a few levels deep, and arrays for those cost two
+/// allocations (and their growth) on every `encode` call.
 ///
 /// The owner calls ``deallocate()`` once it is done with the stack.
 struct MessagePackStack<Element> {
