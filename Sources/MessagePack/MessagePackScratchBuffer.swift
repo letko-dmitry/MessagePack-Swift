@@ -1,8 +1,7 @@
 import Foundation
 
-/// A growable raw byte buffer conforming to ``MessagePackFormatSink``.
-/// Used as scratch space during encoding; the final `Data` is produced by
-/// ``MessagePackEncoderImpl/finalize()``.
+/// A growable raw byte buffer conforming to ``MessagePackFormatSink``, which
+/// every route writes into; ``finish()`` turns it into the result.
 @usableFromInline
 struct MessagePackScratchBuffer: MessagePackFormatSink {
     @usableFromInline
@@ -120,29 +119,70 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
         offset &+= count
     }
 
-    /// Reserves space for a container header whose count is not yet known.
-    /// The element count is accumulated directly in bytes 1...4 of the
-    /// reserved space (dead until `finalize()` rewrites it), which avoids
-    /// per-element bookkeeping in a separate array.
+    /// Adds an entry to the count in the container header at `position`.
+    ///
+    /// A header starts as a fixmap or fixarray and is widened in place to the
+    /// 16- and then the 32-bit format when its count outgrows it, moving the
+    /// entries already written: at most twice per container, and only ever
+    /// for the innermost open container, so no open container moves.
     @inline(__always)
-    mutating func reserveContainerHeader() -> Int {
-        ensure(5)
-        let position = offset
-        base.storeBytes(of: UInt32(0), toByteOffset: position + 1, as: UInt32.self)
-        offset += 5
-        return position
+    mutating func incrementContainerCount(at position: Int) {
+        let header = base.load(fromByteOffset: position, as: UInt8.self)
+        // A fixmap (0x80...0x8f) or fixarray (0x90...0x9f) below 15 entries.
+        if header & 0x0f != 0x0f && header <= 0x9f {
+            base.storeBytes(of: header &+ 1, toByteOffset: position, as: UInt8.self)
+        } else {
+            incrementWideContainerCount(at: position)
+        }
     }
 
-    /// Increments the element count stored in a reserved container header.
-    @inline(__always)
-    func bumpContainerCount(at position: Int) {
-        let pointer = base + position + 1
-        pointer.storeBytes(of: pointer.loadUnaligned(as: UInt32.self) &+ 1, as: UInt32.self)
+    @inline(never)
+    private mutating func incrementWideContainerCount(at position: Int) {
+        let header = base.load(fromByteOffset: position, as: UInt8.self)
+
+        switch header {
+        case 0x8f, 0x9f:
+            // The 16th entry: map 16 / array 16.
+            insertBytes(2, at: position + 1)
+            base.storeBytes(of: header == 0x8f ? 0xde : 0xdc, toByteOffset: position, as: UInt8.self)
+            base.storeBytes(of: UInt16(16).bigEndian, toByteOffset: position + 1, as: UInt16.self)
+        case 0xde, 0xdc:
+            let count = UInt16(bigEndian: base.loadUnaligned(fromByteOffset: position + 1, as: UInt16.self))
+            if count < 0xffff {
+                base.storeBytes(of: (count + 1).bigEndian, toByteOffset: position + 1, as: UInt16.self)
+            } else {
+                // The 65,536th entry: map 32 / array 32.
+                insertBytes(2, at: position + 3)
+                base.storeBytes(of: header == 0xde ? 0xdf : 0xdd, toByteOffset: position, as: UInt8.self)
+                base.storeBytes(of: UInt32(0x1_0000).bigEndian, toByteOffset: position + 1, as: UInt32.self)
+            }
+        default:
+            let count = UInt32(bigEndian: base.loadUnaligned(fromByteOffset: position + 1, as: UInt32.self))
+            precondition(
+                UInt64(count) < UInt64(MessagePackLimits.maxLength),
+                "MessagePack containers are limited to 2^32-1 entries")
+            base.storeBytes(of: (count + 1).bigEndian, toByteOffset: position + 1, as: UInt32.self)
+        }
     }
 
-    /// Reads the element count stored in a reserved container header.
-    @inline(__always)
+    /// Moves the bytes from `position` on by `count`, opening a gap there.
+    private mutating func insertBytes(_ count: Int, at position: Int) {
+        ensure(count)
+        (base + position + count).copyMemory(from: base + position, byteCount: offset - position)
+        offset += count
+    }
+
+    /// The entry count in the container header at `position`.
     func containerCount(at position: Int) -> Int {
-        Int((base + position + 1).loadUnaligned(as: UInt32.self))
+        let header = base.load(fromByteOffset: position, as: UInt8.self)
+
+        switch header {
+        case 0x80...0x9f:
+            return Int(header & 0x0f)
+        case 0xdc, 0xde:
+            return Int(UInt16(bigEndian: base.loadUnaligned(fromByteOffset: position + 1, as: UInt16.self)))
+        default:
+            return Int(UInt32(bigEndian: base.loadUnaligned(fromByteOffset: position + 1, as: UInt32.self)))
+        }
     }
 }

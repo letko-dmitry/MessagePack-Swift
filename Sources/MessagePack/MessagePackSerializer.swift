@@ -47,34 +47,3 @@ public struct MessagePackSerializer {
         return try result.get()
     }
 }
-
-// MARK: - Pre-sized raw buffer writer
-
-extension MessagePackSerializer {
-    /// Writes into a pre-sized raw buffer whose capacity the caller has
-    /// already established, so writing never fails. Used by
-    /// ``MessagePackEncoderImpl/finalize()`` to assemble the final output.
-    /// The wire-format emission logic lives in ``MessagePackFormatSink``.
-    struct Writer: MessagePackFormatSink {
-        let base: UnsafeMutableRawPointer
-        var offset = 0
-
-        @inline(__always)
-        mutating func writeByte(_ byte: UInt8) {
-            base.storeBytes(of: byte, toByteOffset: offset, as: UInt8.self)
-            offset += 1
-        }
-
-        @inline(__always)
-        mutating func writeBigEndian<T: FixedWidthInteger>(_ value: T) {
-            base.storeBytes(of: value.bigEndian, toByteOffset: offset, as: T.self)
-            offset += MemoryLayout<T>.size
-        }
-
-        @inline(__always)
-        mutating func writeBytes(_ pointer: UnsafeRawPointer, count: Int) {
-            base.advanced(by: offset).copyMemory(from: pointer, byteCount: count)
-            offset += count
-        }
-    }
-}

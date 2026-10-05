@@ -198,18 +198,20 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   trap with a precondition failure instead of corrupting output. Decoding
   enforces a nesting-depth limit (128) against hostile input driving
   recursive `Decodable` types.
-- The `Decoder` and containers handed to `init(from:)` are valid only
-  during that `decode` call (they refer to state on its stack);
-  conformances must not store them.
+- The `Encoder`/`Decoder` and containers handed to `encode(to:)` and
+  `init(from:)` are valid only during that `encode`/`decode` call (they
+  refer to state on its stack); conformances must not store them.
 
 ### Codable performance
 
 Neither direction materializes a `MessagePackValue` tree:
 
-- **Encoding** streams bytes into a growable buffer in a single pass.
-  Container headers (counts unknown up front) are reserved at full width,
-  counts are accumulated in the reserved bytes themselves, and headers are
-  compacted to the smallest format in one final pass.
+- **Encoding** streams bytes straight into the output in a single pass.
+  A container's header (its count unknown up front) is written as a fixmap
+  or fixarray and keeps the running count itself, widening in place to the
+  16- or 32-bit format if the container outgrows it. The output buffer
+  starts in the `encode` call's own stack frame, so a typical message is
+  encoded without allocating it.
 - **Decoding** walks the raw bytes directly. A keyed container records its
   entries' byte offsets and key lengths as it scans, and matches coding keys
   with a length check and a `memcmp` against the wire bytes (no key

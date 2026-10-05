@@ -270,14 +270,6 @@ extension MessagePackFormatSink {
             writeBigEndian(UInt32(truncatingIfNeeded: count))
         }
     }
-
-    /// The number of bytes ``writeArrayHeader(count:)`` / ``writeMapHeader(count:)``
-    /// emit for `count` elements.
-    static func containerHeaderSize(count: Int) -> Int {
-        if count < 16 { return 1 }
-        if count <= 0xffff { return 3 }
-        return 5
-    }
 }
 
 // MARK: - Value-tree writing
