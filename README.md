@@ -168,6 +168,14 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   float64 → `Float` overflow) throw instead of truncating.
   `Int128`/`UInt128` encode when the value fits in 64 bits and throw
   `EncodingError.invalidValue` otherwise.
+- `Decimal`, which MessagePack has no type for, goes through its own
+  `Codable` conformance (a map of its fields) by default. As an option,
+  `MessagePackEncoder(decimalEncodingStrategy: .convertToString)` writes a
+  string of its exact digits (`"0.35"`, 5 bytes instead of about 60), and
+  `MessagePackDecoder(decimalDecodingStrategy:)` takes the set of formats a
+  `Decimal` is read from: `.deferredToDecimal` (the map, the default),
+  `.convertFromString`, `.convertFromInteger`, and `.convertFromFloat`.
+  Versions before the option cannot read the string.
 - Encoder output is byte-identical to `MessagePackSerializer.serialize` of
   the equivalent value tree (smallest headers everywhere).
 - Both coders are `Sendable` (unchecked, value-semantic — like
@@ -265,4 +273,4 @@ Deserialization of a flat scalar array performs 1 allocation (the result array);
 swift test
 ```
 
-200 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors, and 128-bit integers), and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
+207 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors, `Decimal`, and 128-bit integers), and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).

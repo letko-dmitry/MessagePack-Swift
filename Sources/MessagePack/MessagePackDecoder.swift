@@ -14,16 +14,53 @@ import Foundation
 ///   a numeric value interpreted as seconds since 1970.
 /// - `Data` decodes from bin 8/16/32.
 /// - ``MessagePackTimestamp`` decodes from the timestamp extension type.
+/// - `Decimal` decodes from the formats ``decimalDecodingStrategy`` accepts:
+///   by default the map of fields its own `Codable` conformance writes, and
+///   optionally a string of decimal digits (what
+///   ``MessagePackEncoder/DecimalEncodingStrategy/convertToString`` writes),
+///   an integer, or a float.
 ///
 /// Integers decode from any integer wire format that fits the requested
 /// type; the smallest-format encoding the serializer and encoder use is
 /// therefore always round-trippable.
 public struct MessagePackDecoder {
+    /// How `Decimal` values, which MessagePack has no type for, are read,
+    /// named like `JSONDecoder`'s strategies. As an option set, it accepts
+    /// several formats at once, such as the map and a string.
+    public struct DecimalDecodingStrategy: OptionSet, Sendable {
+        public let rawValue: UInt8
+
+        public init(rawValue: UInt8) {
+            self.rawValue = rawValue
+        }
+
+        /// Defers to `Decimal`'s own `Codable` conformance, which reads the
+        /// map of fields it writes
+        /// (``MessagePackEncoder/DecimalEncodingStrategy/deferredToDecimal``).
+        /// The default, and all that earlier versions read.
+        public static let deferredToDecimal = Self(rawValue: 1 << 0)
+        /// Converts from a string of decimal digits: what
+        /// ``MessagePackEncoder/DecimalEncodingStrategy/convertToString``
+        /// writes, and other languages' decimal types produce.
+        public static let convertFromString = Self(rawValue: 1 << 1)
+        /// Converts from an integer, exactly.
+        public static let convertFromInteger = Self(rawValue: 1 << 2)
+        /// Converts from a float through its shortest decimal text, so a
+        /// float 64 of 0.35 reads as 0.35.
+        public static let convertFromFloat = Self(rawValue: 1 << 3)
+    }
+
     /// Contextual information made available to the `Decodable` types via
     /// `Decoder.userInfo`.
     public var userInfo: [CodingUserInfoKey: Any] = [:]
 
-    public init() {}
+    /// How `Decimal` values are read; a value in a format the strategy does
+    /// not accept is a type mismatch.
+    public var decimalDecodingStrategy: DecimalDecodingStrategy
+
+    public init(decimalDecodingStrategy: DecimalDecodingStrategy = .deferredToDecimal) {
+        self.decimalDecodingStrategy = decimalDecodingStrategy
+    }
 
     /// Decodes a value of the given type from MessagePack binary data.
     ///
@@ -32,7 +69,8 @@ public struct MessagePackDecoder {
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> T in
             let context = MessagePackDecodingContext(
-                base: raw.baseAddress, count: raw.count, userInfo: userInfo)
+                base: raw.baseAddress, count: raw.count, userInfo: userInfo,
+                decimalDecodingStrategy: decimalDecodingStrategy)
             var parser = context.parser(at: 0)
             let value = try MessagePackDecoding.unwrap(
                 type, parser: &parser, context: context, codingPath: [])
@@ -55,6 +93,7 @@ final class MessagePackDecodingContext {
     let base: UnsafeRawPointer?
     let count: Int
     let userInfo: [CodingUserInfoKey: Any]
+    let decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
 
     /// Memo of the most recently completed container traversal: a keyed
     /// container's creation scan (or an unkeyed container decoding its last
@@ -73,10 +112,14 @@ final class MessagePackDecodingContext {
     /// container still references it.
     private var storagePool: [MessagePackKeyedStorage] = []
 
-    init(base: UnsafeRawPointer?, count: Int, userInfo: [CodingUserInfoKey: Any]) {
+    init(
+        base: UnsafeRawPointer?, count: Int, userInfo: [CodingUserInfoKey: Any],
+        decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
+    ) {
         self.base = base
         self.count = count
         self.userInfo = userInfo
+        self.decimalDecodingStrategy = decimalDecodingStrategy
     }
 
     /// Returns a keyed storage no live container references, or a fresh one.
@@ -311,7 +354,7 @@ enum MessagePackDecoding {
     /// coding path on failure. The path closure only runs when an error
     /// actually propagates, keeping the happy path allocation-free.
     @inline(__always)
-    private static func readScalarOrRewind<V>(
+    static func readScalarOrRewind<V>(
         _ type: V.Type,
         _ parser: inout Parser,
         _ startOffset: Int,
@@ -415,14 +458,31 @@ enum MessagePackDecoding {
         if T.self == [Int8].self { return try primitiveArray(&parser, codingPath, readInteger) as [Int8] as! T }
         if T.self == [UInt8].self { return try primitiveArray(&parser, codingPath, readInteger) as [UInt8] as! T }
         if T.self == [UInt].self { return try primitiveArray(&parser, codingPath, readInteger) as [UInt] as! T }
-        let path = codingPath()
+        // The default strategy, `.deferredToDecimal` alone, is what
+        // `Decimal`'s own conformance reads below. The strategy is checked
+        // first: `Decimal.self` costs a call to Foundation's metadata accessor.
+        if context.decimalDecodingStrategy != .deferredToDecimal, T.self == Decimal.self {
+            return try decodeDecimal(parser: &parser, context: context, codingPath: codingPath) as! T
+        }
+        return try decodeWithContainers(type, parser: &parser, context: context, codingPath: codingPath())
+    }
+
+    /// Decodes a value through its `Decodable` conformance and the container
+    /// machinery, advancing the parser past it.
+    static func decodeWithContainers<T: Decodable>(
+        _ type: T.Type,
+        parser: inout Parser,
+        context: MessagePackDecodingContext,
+        codingPath: [CodingKey]
+    ) throws -> T {
+        let startOffset = parser.offset
         let impl = MessagePackDecoderImpl(
-            context: context, offset: startOffset, codingPath: path)
+            context: context, offset: startOffset, codingPath: codingPath)
         let value = try type.init(from: impl)
         if context.memoStart == startOffset {
             parser.offset = context.memoEnd
         } else {
-            try skip(&parser, path: path)
+            try skip(&parser, path: codingPath)
         }
         return value
     }
