@@ -10,7 +10,7 @@ extension MessagePackDecoding {
         _ type: T.Type,
         parser: inout Parser,
         context: MessagePackDecodingContext,
-        codingPath: () -> [CodingKey]
+        path: () -> MessagePackCodingPath
     ) throws -> T {
         // Only the `[Int]` loop inlines the integer read. The other integer
         // loops call the shared out-of-line read: `[Int64]` and `[UInt64]`
@@ -18,33 +18,33 @@ extension MessagePackDecoding {
         // optimizer then merges into one function.
         switch collectionType {
         case .intArray:
-            return try primitiveArray(&parser, codingPath, readIntegerInlined) as [Int] as! T
+            return try primitiveArray(&parser, path, readIntegerInlined) as [Int] as! T
         case .stringArray:
-            return try primitiveArray(&parser, codingPath, readString) as [String] as! T
+            return try primitiveArray(&parser, path, readString) as [String] as! T
         case .doubleArray:
-            return try primitiveArray(&parser, codingPath, readDouble) as [Double] as! T
+            return try primitiveArray(&parser, path, readDouble) as [Double] as! T
         case .boolArray:
-            return try primitiveArray(&parser, codingPath, readBool) as [Bool] as! T
+            return try primitiveArray(&parser, path, readBool) as [Bool] as! T
         case .floatArray:
-            return try primitiveArray(&parser, codingPath, readFloat) as [Float] as! T
+            return try primitiveArray(&parser, path, readFloat) as [Float] as! T
         case .int64Array:
-            return try primitiveArray(&parser, codingPath, readInteger) as [Int64] as! T
+            return try primitiveArray(&parser, path, readInteger) as [Int64] as! T
         case .uInt64Array:
-            return try primitiveArray(&parser, codingPath, readInteger) as [UInt64] as! T
+            return try primitiveArray(&parser, path, readInteger) as [UInt64] as! T
         case .int32Array:
-            return try primitiveArray(&parser, codingPath, readInteger) as [Int32] as! T
+            return try primitiveArray(&parser, path, readInteger) as [Int32] as! T
         case .uInt32Array:
-            return try primitiveArray(&parser, codingPath, readInteger) as [UInt32] as! T
+            return try primitiveArray(&parser, path, readInteger) as [UInt32] as! T
         case .int16Array:
-            return try primitiveArray(&parser, codingPath, readInteger) as [Int16] as! T
+            return try primitiveArray(&parser, path, readInteger) as [Int16] as! T
         case .uInt16Array:
-            return try primitiveArray(&parser, codingPath, readInteger) as [UInt16] as! T
+            return try primitiveArray(&parser, path, readInteger) as [UInt16] as! T
         case .int8Array:
-            return try primitiveArray(&parser, codingPath, readInteger) as [Int8] as! T
+            return try primitiveArray(&parser, path, readInteger) as [Int8] as! T
         case .uInt8Array:
-            return try primitiveArray(&parser, codingPath, readInteger) as [UInt8] as! T
+            return try primitiveArray(&parser, path, readInteger) as [UInt8] as! T
         case .uIntArray:
-            return try primitiveArray(&parser, codingPath, readInteger) as [UInt] as! T
+            return try primitiveArray(&parser, path, readInteger) as [UInt] as! T
         case .intDictionary:
             if let dictionary = primitiveDictionary(&parser, readIntegerInlined) as [String: Int]? {
                 return dictionary as! T
@@ -64,7 +64,7 @@ extension MessagePackDecoding {
         }
 
         // Anything but a map of unique string keys and values of the type.
-        return try decodeWithContainers(type, parser: &parser, context: context, codingPath: codingPath())
+        return try decodeWithContainers(type, parser: &parser, context: context, path: path())
     }
 
     /// Decodes an array of a natively represented element type with a tight
@@ -73,7 +73,7 @@ extension MessagePackDecoding {
     /// the element's index in the coding path.
     static func primitiveArray<E>(
         _ parser: inout Parser,
-        _ codingPath: () -> [CodingKey],
+        _ path: () -> MessagePackCodingPath,
         _ read: (inout Parser) throws(MessagePackDecodeFailure) -> E
     ) throws -> [E] {
         let startOffset = parser.offset
@@ -81,16 +81,16 @@ extension MessagePackDecoding {
         do throws(MessagePackError) {
             headerCount = try parser.readRawArrayHeader()
         } catch {
-            throw corrupted(error, codingPath(), offset: startOffset)
+            throw corrupted(error, path(), offset: startOffset)
         }
         guard let elementCount = headerCount else {
             parser.offset = startOffset
-            throw wrongType([E].self, parser, codingPath())
+            throw wrongType([E].self, parser, path())
         }
         // Each element takes at least one byte; reject hostile counts before
         // reserving storage.
         guard elementCount <= parser.count - parser.offset else {
-            throw corrupted(.insufficientData, codingPath(), offset: startOffset)
+            throw corrupted(.insufficientData, path(), offset: startOffset)
         }
         var result: [E] = []
         result.reserveCapacity(Swift.min(elementCount, messagePackMaxPreallocation))
@@ -102,7 +102,7 @@ extension MessagePackDecoding {
                 parser.offset = elementStart
                 throw decodingError(
                     error, type: E.self, parser: parser,
-                    path: codingPath() + [MessagePackCodingKey(index: index)])
+                    path: path().appending(index: index))
             }
         }
         return result

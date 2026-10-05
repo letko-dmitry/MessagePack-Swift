@@ -234,10 +234,10 @@ Neither direction materializes a `MessagePackValue` tree:
   out-of-line lookup of cached type identifiers, so every other value pays
   a single call for it.
 - Hot paths avoid allocation: index coding keys build their `stringValue`
-  lazily; the encoder's coding paths are nodes on a stack in the `encode`
-  call's frame, turned into `[CodingKey]` only for errors and `codingPath`
-  reads, and the decoder's are only materialized for errors and nested
-  containers; decode primitives report failures via typed throws and attach
+  lazily; coding paths are built in constant time per level — on a stack
+  of nodes in the encoder, a linked list (like `JSONDecoder`'s) in the
+  decoder — and turned into `[CodingKey]` only for errors and `codingPath`
+  reads; decode primitives report failures via typed throws and attach
   coding-path context only when an error actually propagates, and both
   coders keep their mutable state behind a pointer, bypassing dynamic
   exclusivity checks.
