@@ -172,6 +172,12 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
         offset += count
     }
 
+    /// Whether the container header at `position` is a map's.
+    func isMapHeader(at position: Int) -> Bool {
+        let header = base.load(fromByteOffset: position, as: UInt8.self)
+        return header & 0xf0 == 0x80 || header == 0xde || header == 0xdf
+    }
+
     /// The entry count in the container header at `position`.
     func containerCount(at position: Int) -> Int {
         let header = base.load(fromByteOffset: position, as: UInt8.self)

@@ -1,5 +1,10 @@
 import Foundation
 
+private let secondSingleValueMessage = """
+    Attempt to encode a second value (or a value after a container) through \
+    a single value encoding container
+    """
+
 private let outOfOrderWriteMessage = """
     Attempt to encode into a MessagePack container after writes to its parent \
     closed it. Nested containers and superEncoder() values must be fully \
@@ -40,7 +45,7 @@ final class MessagePackDeferredEncoder: Encoder {
         precondition(
             impl.state.pointee.beginEntry(at: parentPosition), outOfOrderWriteMessage)
         if let key { impl.state.pointee.buffer.writeString(key) }
-        let encoder = _MessagePackEncoder(impl: impl, path: path)
+        let encoder = _MessagePackEncoder(impl: impl, path: path, start: impl.state.pointee.buffer.offset)
         inner = encoder
         return encoder
     }
@@ -67,9 +72,10 @@ struct MessagePackDeferredSingleValueEncodingContainer: SingleValueEncodingConta
 
     @inline(__always)
     private func begin() -> UnsafeMutablePointer<MessagePackEncoderState> {
-        let inner = owner.activate()
-        owner.impl.state.pointee.markSingleValueWritten(id: inner.id)
-        return owner.impl.state
+        let start = owner.activate().start
+        let state = owner.impl.state
+        precondition(state.pointee.buffer.offset == start, secondSingleValueMessage)
+        return state
     }
 
     mutating func encodeNil() throws { begin().pointee.buffer.writeNil() }
@@ -364,15 +370,16 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
 struct MessagePackSingleValueEncodingContainer: SingleValueEncodingContainer {
     let impl: MessagePackEncoderImpl
     let path: MessagePackEncodingPath
-    let encoderID: Int
+    /// Where the encoder's value starts; see ``_MessagePackEncoder/start``.
+    let start: Int
 
     var codingPath: [CodingKey] { impl.codingPath(path) }
 
-    /// Marks the owning encoder's slot as consumed so a second encode (or a
-    /// container request) for the same value traps, like `JSONEncoder`.
+    /// Traps if something was already encoded for the value, like
+    /// `JSONEncoder`: a second value would corrupt the output.
     @inline(__always)
     private func beginValue() {
-        impl.state.pointee.markSingleValueWritten(id: encoderID)
+        precondition(impl.state.pointee.buffer.offset == start, secondSingleValueMessage)
     }
 
     mutating func encodeNil() throws {
