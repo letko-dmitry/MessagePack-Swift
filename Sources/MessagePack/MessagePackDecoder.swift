@@ -554,6 +554,12 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
     func decode(_ type: UInt32.Type) throws -> UInt32 { try decodeScalar(type, MessagePackDecoding.readInteger) }
     func decode(_ type: UInt64.Type) throws -> UInt64 { try decodeScalar(type, MessagePackDecoding.readInteger) }
 
+    @available(watchOS 11.0, *)
+    func decode(_ type: Int128.Type) throws -> Int128 { try decodeScalar(type, MessagePackDecoding.readInteger) }
+
+    @available(watchOS 11.0, *)
+    func decode(_ type: UInt128.Type) throws -> UInt128 { try decodeScalar(type, MessagePackDecoding.readInteger) }
+
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
         var parser = context.parser(at: offset)
         return try MessagePackDecoding.unwrap(
