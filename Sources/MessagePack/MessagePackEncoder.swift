@@ -321,6 +321,8 @@ struct MessagePackEncoderImpl {
             state.pointee.buffer.writeUIntOutlined(UInt64(value.load(as: UInt.self)))
         } else if type == ObjectIdentifier(MessagePackTimestamp.self) {
             state.pointee.buffer.writeTimestamp(value.load(as: MessagePackTimestamp.self))
+        } else if let collectionType = MessagePackCollectionType(type) {
+            encodeCollection(collectionType, value)
         } else {
             return .notNative
         }
