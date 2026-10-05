@@ -45,19 +45,11 @@ struct CodableDecimalTests {
     }
 }
 
-@Suite("Codable Decimal strategies")
-struct CodableDecimalStrategyTests {
-    private static let stringEncoder: MessagePackEncoder = {
-        var encoder = MessagePackEncoder()
-        encoder.decimalEncodingStrategy = .string
-        return encoder
-    }()
+@Suite("Codable Decimal options")
+struct CodableDecimalOptionTests {
+    private static let stringEncoder = MessagePackEncoder(decimalEncodingStrategy: .string)
 
-    private static let stringOrNumberDecoder: MessagePackDecoder = {
-        var decoder = MessagePackDecoder()
-        decoder.decimalDecodingStrategy = .stringOrNumber
-        return decoder
-    }()
+    private static let anyFormatDecoder = MessagePackDecoder(decimalDecodingFormats: [.map, .string, .integer, .float])
 
     @Test func stringStrategyWritesTheExactDigits() throws {
         let decimal = try #require(Decimal(string: "0.35"))
@@ -67,20 +59,21 @@ struct CodableDecimalStrategyTests {
     }
 
     @Test func bothEncodingsRoundTripExactly() throws {
+        let decoder = MessagePackDecoder(decimalDecodingFormats: [.map, .string])
         for encoder in [MessagePackEncoder(), Self.stringEncoder] {
             for text in ["0.35", "-12.5", "0", "12345678901234567890123456789012345678.5", "0.0000001"] {
                 let decimal = try #require(Decimal(string: text))
                 let data = try encoder.encode(Box(value: decimal))
-                #expect(try Self.stringOrNumberDecoder.decode(Box<Decimal>.self, from: data).value == decimal)
+                #expect(try decoder.decode(Box<Decimal>.self, from: data).value == decimal)
             }
 
-            let nan = try Self.stringOrNumberDecoder.decode(Decimal.self, from: encoder.encode(Decimal.nan))
+            let nan = try decoder.decode(Decimal.self, from: encoder.encode(Decimal.nan))
             #expect(nan.isNaN)
         }
     }
 
     @Test func decodesNumbers() throws {
-        let decoder = Self.stringOrNumberDecoder
+        let decoder = Self.anyFormatDecoder
         let fromFloat = try MessagePackSerializer.serialize(value: .float64(0.35))
         #expect(try decoder.decode(Decimal.self, from: fromFloat) == Decimal(string: "0.35"))
 
@@ -99,7 +92,25 @@ struct CodableDecimalStrategyTests {
         for value: MessagePackValue in [.string("1.5abc"), .string("1,5"), .string(""), .bool(true), .float64(.infinity)] {
             let data = try MessagePackSerializer.serialize(value: value)
             #expect(throws: DecodingError.self) {
-                try Self.stringOrNumberDecoder.decode(Decimal.self, from: data)
+                try Self.anyFormatDecoder.decode(Decimal.self, from: data)
+            }
+        }
+    }
+
+    /// A format left out of the set is a type mismatch, as for the default.
+    @Test func otherFormatsAreAMismatch() throws {
+        let decimal = try #require(Decimal(string: "0.35"))
+        let cases: [(MessagePackDecoder.DecimalDecodingFormats, Data)] = [
+            ([.string], try MessagePackEncoder().encode(decimal)),
+            ([.map], try Self.stringEncoder.encode(decimal)),
+            ([.map, .string, .float], try MessagePackSerializer.serialize(value: .uint8(3))),
+            ([.map, .string, .integer], try MessagePackSerializer.serialize(value: .float64(0.35))),
+        ]
+        for (formats, data) in cases {
+            #expect {
+                try MessagePackDecoder(decimalDecodingFormats: formats).decode(Decimal.self, from: data)
+            } throws: { error in
+                if case DecodingError.typeMismatch = error { true } else { false }
             }
         }
     }

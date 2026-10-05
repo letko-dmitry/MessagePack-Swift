@@ -47,8 +47,8 @@ public struct MessagePackEncoder {
         case deferredToDecimal
         /// A string of the exact decimal digits (`"0.35"`): a fraction of
         /// the map's size, and parsed by other languages' decimal types.
-        /// Decoders need ``MessagePackDecoder/DecimalDecodingStrategy/stringOrNumber``
-        /// to read it; versions before this option cannot.
+        /// Decoders read it with ``MessagePackDecoder/DecimalDecodingFormats/string``
+        /// in their formats; versions before this option cannot.
         case string
     }
 
@@ -56,11 +56,12 @@ public struct MessagePackEncoder {
     /// `Encoder.userInfo`.
     public var userInfo: [CodingUserInfoKey: Any] = [:]
 
-    /// How `Decimal` values are written. Defaults to
-    /// ``DecimalEncodingStrategy/deferredToDecimal``.
-    public var decimalEncodingStrategy: DecimalEncodingStrategy = .deferredToDecimal
+    /// How `Decimal` values are written.
+    public var decimalEncodingStrategy: DecimalEncodingStrategy
 
-    public init() {}
+    public init(decimalEncodingStrategy: DecimalEncodingStrategy = .deferredToDecimal) {
+        self.decimalEncodingStrategy = decimalEncodingStrategy
+    }
 
     /// Encodes `value` into MessagePack binary data.
     ///

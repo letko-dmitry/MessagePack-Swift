@@ -3,67 +3,89 @@ import Foundation
 // MARK: - Decimal
 
 extension MessagePackDecoding {
-    /// Decodes a `Decimal` with ``MessagePackDecoder/DecimalDecodingStrategy/stringOrNumber``:
-    /// from the map of fields that `Decimal`'s own `Codable` conformance
-    /// writes (through that conformance), from a string of decimal digits
-    /// (the encoder's `.string` strategy, and what other languages' decimal
-    /// types produce), or from any number: integers convert exactly and
-    /// floats through their shortest decimal text, so a float 64 of 0.35
-    /// decodes as 0.35 rather than 0.34999999999999997952.
+    /// Decodes a `Decimal` from the formats in
+    /// ``MessagePackDecoder/decimalDecodingFormats``: the map of fields that
+    /// `Decimal`'s own `Codable` conformance writes (through that
+    /// conformance), a string of decimal digits, an integer (exactly), or a
+    /// float (through its shortest decimal text, so a float 64 of 0.35
+    /// decodes as 0.35 rather than 0.34999999999999997952).
     static func decodeDecimal(
         parser: inout Parser,
         context: MessagePackDecodingContext,
         path: () -> MessagePackCodingPath
     ) throws -> Decimal {
-        if let format = try? parser.peekFormat(), isMapFormat(format) {
+        let formats = context.state.pointee.decimalDecodingFormats
+        if formats.contains(.map), let format = try? parser.peekFormat(), isMapFormat(format) {
             return try decodeWithContainers(Decimal.self, parser: &parser, context: context, path: path())
         }
 
-        return try readScalarOrRewind(Decimal.self, &parser, parser.offset, path, readDecimal)
+        return try readScalarOrRewind(Decimal.self, &parser, parser.offset, path) {
+            (parser: inout Parser) throws(MessagePackDecodeFailure) -> Decimal in
+            try readDecimal(&parser, formats: formats)
+        }
     }
 
-    private static func readDecimal(_ parser: inout Parser) throws(MessagePackDecodeFailure) -> Decimal {
-        let string: String?
-        do throws(MessagePackError) {
-            string = try parser.readRawString()
-        } catch {
-            throw .corrupted(error)
-        }
-
-        if let string {
-            guard let decimal = decimal(from: string) else {
-                throw .invalid("String \"\(string)\" is not a decimal number")
+    /// Reads a string, integer, or float `Decimal` in one of `formats`;
+    /// anything else is the wrong type.
+    private static func readDecimal(
+        _ parser: inout Parser, formats: MessagePackDecoder.DecimalDecodingFormats
+    ) throws(MessagePackDecodeFailure) -> Decimal {
+        if formats.contains(.string) {
+            let string: String?
+            do throws(MessagePackError) {
+                string = try parser.readRawString()
+            } catch {
+                throw .corrupted(error)
             }
-            return decimal
+
+            if let string {
+                guard let decimal = decimal(from: string) else {
+                    throw .invalid("String \"\(string)\" is not a decimal number")
+                }
+                return decimal
+            }
         }
 
-        let integer: MessagePackRawInteger?
-        do throws(MessagePackError) {
-            integer = try parser.readRawInteger()
-        } catch {
-            throw .corrupted(error)
+        if formats.contains(.integer) {
+            let integer: MessagePackRawInteger?
+            do throws(MessagePackError) {
+                integer = try parser.readRawInteger()
+            } catch {
+                throw .corrupted(error)
+            }
+
+            switch integer {
+            case .signed(let value):
+                return Decimal(value)
+            case .unsigned(let value):
+                return Decimal(value)
+            case nil:
+                break
+            }
         }
 
-        switch integer {
-        case .signed(let value):
-            return Decimal(value)
-        case .unsigned(let value):
-            return Decimal(value)
-        case nil:
-            break
+        if formats.contains(.float) {
+            // A float converts through its shortest text in the width it was
+            // written in: widened to a Double first, a float 32 of 0.35 would
+            // come out as 0.3499999940395355.
+            let isFloat32 = (try? parser.peekFormat()) == 0xca
+            let float: Double?
+            do throws(MessagePackError) {
+                float = try parser.readRawFloat()
+            } catch {
+                throw .corrupted(error)
+            }
+
+            if let float {
+                let text = isFloat32 ? "\(Float(float))" : "\(float)"
+                guard float.isFinite, let decimal = Decimal(string: text) else {
+                    throw .invalid("Number \(float) does not fit in Decimal")
+                }
+                return decimal
+            }
         }
 
-        // A float converts through its shortest text in the width it was
-        // written in: widened to a Double first, a float 32 of 0.35 would
-        // come out as 0.3499999940395355.
-        let isFloat32 = (try? parser.peekFormat()) == 0xca
-        let value = try readDouble(&parser)
-        let text = isFloat32 ? "\(Float(value))" : "\(value)"
-        guard value.isFinite, let decimal = Decimal(string: text) else {
-            throw .invalid("Number \(value) does not fit in Decimal")
-        }
-
-        return decimal
+        throw .wrongType
     }
 
     /// Parses the whole string as a decimal number in the POSIX format that

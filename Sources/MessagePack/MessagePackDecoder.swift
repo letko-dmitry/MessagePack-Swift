@@ -14,11 +14,11 @@ import Foundation
 ///   a numeric value interpreted as seconds since 1970.
 /// - `Data` decodes from bin 8/16/32.
 /// - ``MessagePackTimestamp`` decodes from the timestamp extension type.
-/// - `Decimal` decodes through its own `Codable` conformance (the map of its
-///   fields), and with ``decimalDecodingStrategy`` set to
-///   ``DecimalDecodingStrategy/stringOrNumber`` also from a string of decimal
-///   digits (what ``MessagePackEncoder/DecimalEncodingStrategy/string``
-///   writes) or any number.
+/// - `Decimal` decodes from the formats in ``decimalDecodingFormats``: by
+///   default the map of fields its own `Codable` conformance writes, and
+///   optionally a string of decimal digits (what
+///   ``MessagePackEncoder/DecimalEncodingStrategy/string`` writes), an
+///   integer, or a float.
 ///
 /// The `Decoder` and containers handed to `init(from:)` are valid only while
 /// ``decode(_:from:)`` runs: like the pointer in `withUnsafeBytes`, they
@@ -29,29 +29,42 @@ import Foundation
 /// type; the smallest-format encoding the serializer and encoder use is
 /// therefore always round-trippable.
 public struct MessagePackDecoder {
-    /// How `Decimal` values are read, named like the encoder's
-    /// ``MessagePackEncoder/DecimalEncodingStrategy``.
-    public enum DecimalDecodingStrategy: Sendable {
-        /// Defers to `Decimal`'s own `Codable` conformance, which reads the
-        /// map of its fields. The default, and what earlier versions did.
-        case deferredToDecimal
-        /// Also reads a string of decimal digits (what
+    /// The MessagePack formats a `Decimal`, which MessagePack has no type
+    /// for, is read from.
+    public struct DecimalDecodingFormats: OptionSet, Sendable {
+        public let rawValue: UInt8
+
+        public init(rawValue: UInt8) {
+            self.rawValue = rawValue
+        }
+
+        /// The map of fields that `Decimal`'s own `Codable` conformance
+        /// writes (``MessagePackEncoder/DecimalEncodingStrategy/deferredToDecimal``),
+        /// read through that conformance. The default, and all that earlier
+        /// versions read.
+        public static let map = Self(rawValue: 1 << 0)
+        /// A string of decimal digits: what
         /// ``MessagePackEncoder/DecimalEncodingStrategy/string`` writes, and
-        /// other languages' decimal types produce) and any number: integers
-        /// convert exactly, floats through their shortest decimal text, so a
-        /// float 64 of 0.35 decodes as 0.35.
-        case stringOrNumber
+        /// other languages' decimal types produce.
+        public static let string = Self(rawValue: 1 << 1)
+        /// An integer, converted exactly.
+        public static let integer = Self(rawValue: 1 << 2)
+        /// A float, converted through its shortest decimal text, so a
+        /// float 64 of 0.35 reads as 0.35.
+        public static let float = Self(rawValue: 1 << 3)
     }
 
     /// Contextual information made available to the `Decodable` types via
     /// `Decoder.userInfo`.
     public var userInfo: [CodingUserInfoKey: Any] = [:]
 
-    /// How `Decimal` values are read. Defaults to
-    /// ``DecimalDecodingStrategy/deferredToDecimal``.
-    public var decimalDecodingStrategy: DecimalDecodingStrategy = .deferredToDecimal
+    /// The formats `Decimal` values are read from; a value in any other
+    /// format is a type mismatch.
+    public var decimalDecodingFormats: DecimalDecodingFormats
 
-    public init() {}
+    public init(decimalDecodingFormats: DecimalDecodingFormats = .map) {
+        self.decimalDecodingFormats = decimalDecodingFormats
+    }
 
     /// Decodes a value of the given type from MessagePack binary data.
     ///
@@ -65,7 +78,7 @@ public struct MessagePackDecoder {
                 base: raw.baseAddress,
                 count: raw.count,
                 userInfo: userInfo,
-                decimalDecodingStrategy: decimalDecodingStrategy
+                decimalDecodingFormats: decimalDecodingFormats
             )
 
             return try withUnsafeMutablePointer(to: &state) { state in
@@ -96,7 +109,7 @@ struct MessagePackDecodingContext {
         let base: UnsafeRawPointer?
         let count: Int
         let userInfo: [CodingUserInfoKey: Any]
-        let decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
+        let decimalDecodingFormats: MessagePackDecoder.DecimalDecodingFormats
 
         /// Memo of the most recently completed value whose end no keyed
         /// storage tracks: an unkeyed container that decoded its last
@@ -480,7 +493,9 @@ enum MessagePackDecoding {
         if let collectionType = MessagePackCollectionType(ObjectIdentifier(T.self)) {
             return try decodeCollection(collectionType, type, parser: &parser, context: context, path: path)
         }
-        if ObjectIdentifier(T.self) == foundation.decimal, context.state.pointee.decimalDecodingStrategy == .stringOrNumber {
+        // The default formats, `.map` alone, are what `Decimal`'s own
+        // conformance reads below.
+        if ObjectIdentifier(T.self) == foundation.decimal, context.state.pointee.decimalDecodingFormats != .map {
             return try decodeDecimal(parser: &parser, context: context, path: path) as! T
         }
 

@@ -174,10 +174,11 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   `EncodingError.invalidValue` otherwise.
 - `Decimal`, which MessagePack has no type for, goes through its own
   `Codable` conformance (a map of its fields) by default. As an option,
-  `decimalEncodingStrategy = .string` writes a string of its exact digits
-  (`"0.35"`, 5 bytes instead of about 60), which the decoder reads with
-  `decimalDecodingStrategy = .stringOrNumber` (the map, a string, or any
-  number); versions before the option cannot read it.
+  `MessagePackEncoder(decimalEncodingStrategy: .string)` writes a string of
+  its exact digits (`"0.35"`, 5 bytes instead of about 60), and
+  `MessagePackDecoder(decimalDecodingFormats:)` lists the formats a
+  `Decimal` is read from: `.map` (the default), `.string`, `.integer`, and
+  `.float`. Versions before the option cannot read the string.
 - The `Encoder`/`Decoder` and containers handed to `encode(to:)` and
   `init(from:)` are valid only during that `encode`/`decode` call (they
   refer to state on its stack); conformances must not store them.
@@ -283,4 +284,4 @@ Deserialization of a flat scalar array performs 1 allocation (the result array);
 swift test
 ```
 
-240 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
+241 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
