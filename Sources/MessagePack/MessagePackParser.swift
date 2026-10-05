@@ -73,8 +73,8 @@ extension MessagePackSerializer {
         /// A partially parsed container. Map entries are accumulated as
         /// alternating key/value items and assembled on completion.
         struct Frame {
-            var items: [MessagePackValue]
-            var remaining: Int
+            let items: [MessagePackValue]
+            let remaining: Int
             let isMap: Bool
         }
 
@@ -349,13 +349,14 @@ extension MessagePackSerializer.Parser {
         }
     }
 
-    /// Reads a float 32/64 (or, leniently, any integer) as a `Double`, or
-    /// rewinds and returns `nil`.
+    /// Reads a float 32/64 as a `Double`, or rewinds and returns `nil` if the
+    /// next value is not a float.
     @inlinable
     @inline(__always)
-    mutating func readRawDouble() throws(MessagePackError) -> Double? {
+    mutating func readRawFloat() throws(MessagePackError) -> Double? {
         let start = offset
         let format = try readFormatByte()
+
         switch format {
         case 0xca:
             return Double(Float(bitPattern: try readBigEndian(UInt32.self)))
@@ -363,11 +364,23 @@ extension MessagePackSerializer.Parser {
             return Double(bitPattern: try readBigEndian(UInt64.self))
         default:
             offset = start
-            guard let raw = try readRawInteger() else { return nil }
-            switch raw {
-            case .signed(let v): return Double(v)
-            case .unsigned(let v): return Double(v)
-            }
+            return nil
+        }
+    }
+
+    /// Reads a float 32/64 (or, leniently, any integer) as a `Double`, or
+    /// rewinds and returns `nil`.
+    @inlinable
+    @inline(__always)
+    mutating func readRawDouble() throws(MessagePackError) -> Double? {
+        if let value = try readRawFloat() {
+            return value
+        }
+
+        guard let raw = try readRawInteger() else { return nil }
+        switch raw {
+        case .signed(let v): return Double(v)
+        case .unsigned(let v): return Double(v)
         }
     }
 
@@ -471,6 +484,16 @@ extension MessagePackSerializer.Parser {
     @inlinable
     @inline(__always)
     mutating func readRawExt() throws(MessagePackError) -> (type: Int8, data: Data)? {
+        guard let ext = try readRawExtBytes() else { return nil }
+        return (ext.type, Data(ext.bytes))
+    }
+
+    /// Reads any ext format and returns its type and raw payload (not copied;
+    /// only valid while the input buffer is), or rewinds and returns `nil` if
+    /// the next value is not an extension.
+    @inlinable
+    @inline(__always)
+    mutating func readRawExtBytes() throws(MessagePackError) -> (type: Int8, bytes: UnsafeRawBufferPointer)? {
         let start = offset
         let format = try readFormatByte()
         let length: Int
@@ -488,7 +511,10 @@ extension MessagePackSerializer.Parser {
             return nil
         }
         let type = Int8(bitPattern: try readBigEndian(UInt8.self))
-        return (type, try readData(length: length))
+        guard count - offset >= length, let base else { throw MessagePackError.insufficientData }
+        let bytes = UnsafeRawBufferPointer(start: base + offset, count: length)
+        offset += length
+        return (type, bytes)
     }
 
     /// Reads an array header and returns the element count, or rewinds and

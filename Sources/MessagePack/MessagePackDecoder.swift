@@ -4,9 +4,9 @@ import Foundation
 /// `JSONDecoder`.
 ///
 /// Decoding operates directly on the raw bytes without materializing a
-/// ``MessagePackValue`` tree: keyed containers pre-scan their entries' byte
-/// offsets once (using the shared skip logic in the parser) and match keys by
-/// comparing UTF-8 bytes in place, and unkeyed containers stream through
+/// ``MessagePackValue`` tree: keyed containers scan their entries' byte
+/// offsets lazily (using the shared skip logic in the parser) and match keys
+/// by comparing UTF-8 bytes in place, and unkeyed containers stream through
 /// their elements.
 ///
 /// Special types:
@@ -14,6 +14,11 @@ import Foundation
 ///   a numeric value interpreted as seconds since 1970.
 /// - `Data` decodes from bin 8/16/32.
 /// - ``MessagePackTimestamp`` decodes from the timestamp extension type.
+///
+/// The `Decoder` and containers handed to `init(from:)` are valid only while
+/// ``decode(_:from:)`` runs: like the pointer in `withUnsafeBytes`, they
+/// refer to the input and to state on the call's stack, so a conformance
+/// must not store them for later use.
 ///
 /// Integers decode from any integer wire format that fits the requested
 /// type; the smallest-format encoding the serializer and encoder use is
@@ -30,16 +35,21 @@ public struct MessagePackDecoder {
     /// Throws `DecodingError.dataCorrupted` if `data` contains bytes beyond
     /// the first top-level value.
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        // The mutable decoding state lives on this frame, as the context
+        // (and every container it serves) is only valid during the call.
         try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> T in
-            let context = MessagePackDecodingContext(
-                base: raw.baseAddress, count: raw.count, userInfo: userInfo)
-            var parser = context.parser(at: 0)
-            let value = try MessagePackDecoding.unwrap(
-                type, parser: &parser, context: context, codingPath: [])
-            guard parser.offset == raw.count else {
-                throw MessagePackDecoding.corrupted(.trailingBytes, [])
+            var state = MessagePackDecodingContext.State(base: raw.baseAddress, count: raw.count, userInfo: userInfo)
+
+            return try withUnsafeMutablePointer(to: &state) { state in
+                let context = MessagePackDecodingContext(state: state)
+                var parser = context.parser(at: 0)
+                let value = try MessagePackDecoding.unwrap(
+                    type, parser: &parser, context: context, path: .root)
+                guard parser.offset == raw.count else {
+                    throw MessagePackDecoding.corrupted(.trailingBytes, .root, offset: parser.offset)
+                }
+                return value
             }
-            return value
         }
     }
 }
@@ -48,58 +58,79 @@ extension MessagePackDecoder: @unchecked Sendable {}
 
 // MARK: - Shared decoding state
 
-/// Immutable state shared by every decoder and container of one `decode`
-/// call: the input buffer and user info. The buffer pointer is only valid
-/// for the duration of the top-level `decode` call.
-final class MessagePackDecodingContext {
-    let base: UnsafeRawPointer?
-    let count: Int
-    let userInfo: [CodingUserInfoKey: Any]
+/// The state shared by every decoder and container of one `decode` call: the
+/// input buffer and user info, plus the bookkeeping that lets a decoded value
+/// be passed over without walking its bytes again. The buffer pointer, like
+/// the state itself, is only valid for the duration of the top-level `decode`
+/// call.
+struct MessagePackDecodingContext {
+    struct State {
+        let base: UnsafeRawPointer?
+        let count: Int
+        let userInfo: [CodingUserInfoKey: Any]
 
-    /// Memo of the most recently completed container traversal: a keyed
-    /// container's creation scan (or an unkeyed container decoding its last
-    /// element) already establishes where the value starting at `memoStart`
-    /// ends, letting ``MessagePackDecoding/unwrap(_:parser:context:codingPath:)``
-    /// advance past a decoded value without skipping it a second time. A
-    /// stale memo is harmless: byte offsets uniquely identify values, so a
-    /// matching `memoStart` always implies the same `memoEnd`.
-    var memoStart = -1
-    var memoEnd = -1
+        /// Memo of the most recently completed value whose end no keyed
+        /// storage tracks: an unkeyed container that decoded its last
+        /// element, or a value decoded through a single-value container
+        /// (`Optional` and other wrappers). It lets
+        /// ``MessagePackDecoding/unwrap(_:parser:context:path:)`` advance past
+        /// the value starting at `memoStart` without skipping it a second
+        /// time. A stale memo is harmless: byte offsets uniquely identify
+        /// values, so a matching `memoStart` always implies the same
+        /// `memoEnd`.
+        var memoStart = -1
+        var memoEnd = -1
 
-    /// Recycled keyed-container storages. Decoding a homogeneous array of
-    /// structs otherwise allocates a fresh storage object plus its entry
-    /// array per element; reuse eliminates both, and
-    /// `isKnownUniquelyReferenced` keeps a storage alive as long as any
-    /// container still references it.
-    private var storagePool: [MessagePackKeyedStorage] = []
+        /// The value ``MessagePackDecoding/unwrap(_:parser:context:path:)``
+        /// is decoding through its `Decodable` conformance, and the storage
+        /// of the map that value opened, if any. Nested decodes save and
+        /// restore both, so once `init(from:)` returns they describe the
+        /// value itself, however many nested maps it opened, and its end is
+        /// found by finishing that map's lazy scan instead of skipping the
+        /// whole value.
+        var decodingOffset = -1
+        var decodingStorage: MessagePackKeyedStorage?
 
-    init(base: UnsafeRawPointer?, count: Int, userInfo: [CodingUserInfoKey: Any]) {
-        self.base = base
-        self.count = count
-        self.userInfo = userInfo
+        /// Recycled keyed-container storages. Decoding a homogeneous array
+        /// of structs otherwise allocates a fresh storage object plus its
+        /// entry array per element; reuse eliminates both, and
+        /// `isKnownUniquelyReferenced` keeps a storage alive as long as any
+        /// container still references it.
+        var storagePool: [MessagePackKeyedStorage] = []
     }
+
+    /// The decoding state, in the frame of
+    /// ``MessagePackDecoder/decode(_:from:)``: a single pointer, so copying
+    /// the context into every decoder and container costs no reference
+    /// counting, and its mutable parts bypass the dynamic exclusivity
+    /// enforcement class properties get.
+    let state: UnsafeMutablePointer<State>
+
+    var userInfo: [CodingUserInfoKey: Any] { state.pointee.userInfo }
 
     /// Returns a keyed storage no live container references, or a fresh one.
     /// The pool is bounded: with more than `poolLimit` containers alive at
     /// once (keyed nesting that deep is rare), extra storages are simply not
     /// pooled.
     func borrowKeyedStorage() -> MessagePackKeyedStorage {
-        for index in storagePool.indices {
-            if isKnownUniquelyReferenced(&storagePool[index]) {
-                return storagePool[index]
+        for index in state.pointee.storagePool.indices {
+            if isKnownUniquelyReferenced(&state.pointee.storagePool[index]) {
+                return state.pointee.storagePool[index]
             }
         }
-        let storage = MessagePackKeyedStorage()
+
+        let storage = MessagePackKeyedStorage.make()
         let poolLimit = 8
-        if storagePool.count < poolLimit {
-            storagePool.append(storage)
+        if state.pointee.storagePool.count < poolLimit {
+            state.pointee.storagePool.append(storage)
         }
+
         return storage
     }
 
     @inline(__always)
     func parser(at offset: Int) -> MessagePackSerializer.Parser {
-        MessagePackSerializer.Parser(base: base, count: count, offset: offset)
+        MessagePackSerializer.Parser(base: state.pointee.base, count: state.pointee.count, offset: offset)
     }
 }
 
@@ -132,88 +163,119 @@ enum MessagePackDecoding {
     /// rejected well before the stack runs out.
     static let maxDepth = 128
 
-    static func corrupted(_ error: MessagePackError, _ path: [CodingKey]) -> DecodingError {
+    /// `offset` is where the bytes the error is about start: the value its
+    /// coding path names, or the trailing bytes after the top-level value.
+    @inline(never)
+    static func corrupted(_ error: MessagePackError, _ path: MessagePackCodingPath, offset: Int) -> DecodingError {
         .dataCorrupted(
             DecodingError.Context(
-                codingPath: path,
-                debugDescription: "Invalid MessagePack data: \(error)",
+                codingPath: path.keys,
+                debugDescription: "Invalid MessagePack data: \(error)\(at(offset))",
                 underlyingError: error
             ))
     }
 
+    /// The byte position in error messages, like `JSONDecoder`'s line and
+    /// column, so a failure can be found in the input.
+    private static func at(_ offset: Int) -> String {
+        " at byte offset \(offset)"
+    }
+
     /// A type-mismatch (or, for a nil wire value, value-not-found) error
-    /// describing the format byte actually present.
-    static func wrongType(_ type: Any.Type, _ parser: Parser, _ path: [CodingKey]) -> DecodingError {
+    /// describing the format byte actually present. Out of line, like every
+    /// error builder here: inlined, their messages were copied into each
+    /// decode path. The builders take the coding path as it is stored and
+    /// build its array of keys themselves, so that code stays off the
+    /// decode paths too.
+    @inline(never)
+    static func wrongType(_ type: Any.Type, _ parser: Parser, _ path: MessagePackCodingPath) -> DecodingError {
         guard let format = try? parser.peekFormat() else {
-            return corrupted(.insufficientData, path)
+            return corrupted(.insufficientData, path, offset: parser.offset)
         }
         if format == 0xc0 {
             return .valueNotFound(
                 type,
                 DecodingError.Context(
-                    codingPath: path,
-                    debugDescription: "Cannot decode \(type) -- found nil value instead"
+                    codingPath: path.keys,
+                    debugDescription: "Cannot decode \(type) -- found nil value instead\(at(parser.offset))"
                 ))
         }
         return .typeMismatch(
             type,
             DecodingError.Context(
-                codingPath: path,
+                codingPath: path.keys,
                 debugDescription:
-                    "Expected \(type) but found MessagePack format byte 0x\(String(format, radix: 16))"
+                    "Expected \(type) but found MessagePack format byte 0x\(String(format, radix: 16))\(at(parser.offset))"
             ))
     }
 
     /// Translates a primitive failure into a `DecodingError` with full
     /// coding-path context. Only reached on failure, so building the path
     /// here keeps the happy path allocation-free.
+    @inline(never)
     static func decodingError(
-        _ failure: MessagePackDecodeFailure, type: Any.Type, parser: Parser, path: [CodingKey]
+        _ failure: MessagePackDecodeFailure, type: Any.Type, parser: Parser, path: MessagePackCodingPath
     ) -> DecodingError {
         switch failure {
         case .wrongType:
             return wrongType(type, parser, path)
         case .invalid(let message):
             return .dataCorrupted(
-                DecodingError.Context(codingPath: path, debugDescription: message))
+                DecodingError.Context(codingPath: path.keys, debugDescription: message + at(parser.offset)))
         case .corrupted(let error):
-            return corrupted(error, path)
+            return corrupted(error, path, offset: parser.offset)
         }
     }
 
     @inline(__always)
-    static func skip(_ parser: inout Parser, path: @autoclosure () -> [CodingKey]) throws {
+    static func skip(_ parser: inout Parser, path: MessagePackCodingPath) throws {
+        let startOffset = parser.offset
         do throws(MessagePackError) {
             try parser.skipValue()
         } catch {
-            throw corrupted(error, path())
+            throw corrupted(error, path, offset: startOffset)
         }
     }
 
-    @inline(__always)
+    /// Out of line: one specialization per integer type, shared by every
+    /// container overload (inlined into each of them, it was about 45 KB of
+    /// code). The `[Int]` and `[String: Int]` fast paths loop over
+    /// ``readIntegerInlined(_:)`` instead.
+    @inline(never)
     static func readInteger<T: FixedWidthInteger>(
         _ parser: inout Parser
     ) throws(MessagePackDecodeFailure) -> T {
-        let raw: MessagePackRawInteger?
+        try readIntegerInlined(&parser)
+    }
+
+    @inline(__always)
+    static func readIntegerInlined<T: FixedWidthInteger>(
+        _ parser: inout Parser
+    ) throws(MessagePackDecodeFailure) -> T {
+        let integer: MessagePackRawInteger?
         do throws(MessagePackError) {
-            raw = try parser.readRawInteger()
+            integer = try parser.readRawInteger()
         } catch {
             throw .corrupted(error)
         }
+
+        guard let raw = integer else { throw .wrongType }
+
         switch raw {
         case .signed(let v):
-            guard let value = T(exactly: v) else {
-                throw .invalid("Number \(v) does not fit in \(T.self)")
-            }
+            guard let value = T(exactly: v) else { throw doesNotFit(v, T.self) }
             return value
         case .unsigned(let v):
-            guard let value = T(exactly: v) else {
-                throw .invalid("Number \(v) does not fit in \(T.self)")
-            }
+            guard let value = T(exactly: v) else { throw doesNotFit(v, T.self) }
             return value
-        case nil:
-            throw .wrongType
         }
+    }
+
+    /// The failure for a wire number outside the requested type's range. Out
+    /// of line and non-generic, so the message is built in one place.
+    @inline(never)
+    static func doesNotFit(_ number: Any, _ type: Any.Type) -> MessagePackDecodeFailure {
+        .invalid("Number \(number) does not fit in \(type)")
     }
 
     @inline(__always)
@@ -259,7 +321,7 @@ enum MessagePackDecoding {
         // A finite float64 must stay finite as Float; JSONDecoder likewise
         // rejects numbers that do not fit the requested type.
         if narrowed.isInfinite && value.isFinite {
-            throw .invalid("Number \(value) does not fit in Float")
+            throw doesNotFit(value, Float.self)
         }
         return narrowed
     }
@@ -279,16 +341,17 @@ enum MessagePackDecoding {
     static func readTimestamp(
         _ parser: inout Parser
     ) throws(MessagePackDecodeFailure) -> MessagePackTimestamp {
-        let ext: (type: Int8, data: Data)?
+        // The payload is read in place: a timestamp needs no `Data` of its own.
+        let ext: (type: Int8, bytes: UnsafeRawBufferPointer)?
         do throws(MessagePackError) {
-            ext = try parser.readRawExt()
+            ext = try parser.readRawExtBytes()
         } catch {
             throw .corrupted(error)
         }
         guard let ext else { throw .wrongType }
-        guard let timestamp = MessagePackTimestamp(extType: ext.type, data: ext.data) else {
+        guard ext.type == MessagePackTimestamp.extType, let timestamp = MessagePackTimestamp(payload: ext.bytes) else {
             throw .invalid(
-                "Extension (type \(ext.type), \(ext.data.count) bytes) is not a valid MessagePack timestamp"
+                "Extension (type \(ext.type), \(ext.bytes.count) bytes) is not a valid MessagePack timestamp"
             )
         }
         return timestamp
@@ -307,64 +370,43 @@ enum MessagePackDecoding {
         (0xd4...0xd8).contains(format) || (0xc7...0xc9).contains(format)
     }
 
+    /// Reads one scalar at `offset`, attaching the coding path on failure.
+    /// The path closure only runs when an error actually propagates.
+    static func decodeScalar<V>(
+        _ type: V.Type,
+        context: MessagePackDecodingContext,
+        offset: Int,
+        path: @autoclosure () -> MessagePackCodingPath,
+        _ read: (inout Parser) throws(MessagePackDecodeFailure) -> V
+    ) throws -> V {
+        var parser = context.parser(at: offset)
+
+        do throws(MessagePackDecodeFailure) {
+            return try read(&parser)
+        } catch {
+            // Errors point at the value's start, as on the other routes.
+            parser.offset = offset
+            throw decodingError(error, type: type, parser: parser, path: path())
+        }
+    }
+
     /// Reads one scalar with `read`, rewinding the parser and attaching the
     /// coding path on failure. The path closure only runs when an error
     /// actually propagates, keeping the happy path allocation-free.
     @inline(__always)
-    private static func readScalarOrRewind<V>(
+    static func readScalarOrRewind<V>(
         _ type: V.Type,
         _ parser: inout Parser,
         _ startOffset: Int,
-        _ codingPath: () -> [CodingKey],
+        _ path: () -> MessagePackCodingPath,
         _ read: (inout Parser) throws(MessagePackDecodeFailure) -> V
     ) throws -> V {
         do throws(MessagePackDecodeFailure) {
             return try read(&parser)
         } catch {
             parser.offset = startOffset
-            throw decodingError(error, type: type, parser: parser, path: codingPath())
+            throw decodingError(error, type: type, parser: parser, path: path())
         }
-    }
-
-    /// Decodes an array of a natively represented element type with a tight
-    /// loop over the raw bytes, bypassing the unkeyed-container machinery.
-    /// Error behavior matches the machinery: element failures are reported at
-    /// the element's index in the coding path.
-    private static func primitiveArray<E>(
-        _ parser: inout Parser,
-        _ codingPath: () -> [CodingKey],
-        _ read: (inout Parser) throws(MessagePackDecodeFailure) -> E
-    ) throws -> [E] {
-        let startOffset = parser.offset
-        let headerCount: Int?
-        do throws(MessagePackError) {
-            headerCount = try parser.readRawArrayHeader()
-        } catch {
-            throw corrupted(error, codingPath())
-        }
-        guard let elementCount = headerCount else {
-            parser.offset = startOffset
-            throw wrongType([E].self, parser, codingPath())
-        }
-        // Each element takes at least one byte; reject hostile counts before
-        // reserving storage.
-        guard elementCount <= parser.count - parser.offset else {
-            throw corrupted(.insufficientData, codingPath())
-        }
-        var result: [E] = []
-        result.reserveCapacity(Swift.min(elementCount, messagePackMaxPreallocation))
-        for index in 0..<elementCount {
-            let elementStart = parser.offset
-            do throws(MessagePackDecodeFailure) {
-                result.append(try read(&parser))
-            } catch {
-                parser.offset = elementStart
-                throw decodingError(
-                    error, type: E.self, parser: parser,
-                    path: codingPath() + [MessagePackCodingKey(index: index)])
-            }
-        }
-        return result
     }
 
     /// Decodes a value of arbitrary `Decodable` type at the parser's current
@@ -376,54 +418,75 @@ enum MessagePackDecoding {
         _ type: T.Type,
         parser: inout Parser,
         context: MessagePackDecodingContext,
-        codingPath: @autoclosure () -> [CodingKey]
+        path: @autoclosure () -> MessagePackCodingPath
     ) throws -> T {
         // On failure the parser is rewound to the value start, so callers
         // that catch and retry (or an unkeyed container's cursor) never
         // desync from the element boundary.
         let startOffset = parser.offset
-        if T.self == Int.self { return try readScalarOrRewind(Int.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == String.self { return try readScalarOrRewind(String.self, &parser, startOffset, codingPath, readString) as! T }
-        if T.self == Bool.self { return try readScalarOrRewind(Bool.self, &parser, startOffset, codingPath, readBool) as! T }
-        if T.self == Double.self { return try readScalarOrRewind(Double.self, &parser, startOffset, codingPath, readDouble) as! T }
-        if T.self == Float.self { return try readScalarOrRewind(Float.self, &parser, startOffset, codingPath, readFloat) as! T }
-        if T.self == Int64.self { return try readScalarOrRewind(Int64.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == UInt64.self { return try readScalarOrRewind(UInt64.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == Int32.self { return try readScalarOrRewind(Int32.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == UInt32.self { return try readScalarOrRewind(UInt32.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == Int16.self { return try readScalarOrRewind(Int16.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == UInt16.self { return try readScalarOrRewind(UInt16.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == Int8.self { return try readScalarOrRewind(Int8.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == UInt8.self { return try readScalarOrRewind(UInt8.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == UInt.self { return try readScalarOrRewind(UInt.self, &parser, startOffset, codingPath, readInteger) as! T }
-        if T.self == Date.self { return try readScalarOrRewind(Date.self, &parser, startOffset, codingPath, readDate) as! T }
-        if T.self == Data.self { return try readScalarOrRewind(Data.self, &parser, startOffset, codingPath, readBinary) as! T }
-        if T.self == MessagePackTimestamp.self {
-            return try readScalarOrRewind(MessagePackTimestamp.self, &parser, startOffset, codingPath, readTimestamp) as! T
+        if T.self == Int.self { return try readScalarOrRewind(Int.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == String.self { return try readScalarOrRewind(String.self, &parser, startOffset, path, readString) as! T }
+        if T.self == Bool.self { return try readScalarOrRewind(Bool.self, &parser, startOffset, path, readBool) as! T }
+        if T.self == Double.self { return try readScalarOrRewind(Double.self, &parser, startOffset, path, readDouble) as! T }
+        if T.self == Float.self { return try readScalarOrRewind(Float.self, &parser, startOffset, path, readFloat) as! T }
+        if T.self == Int64.self { return try readScalarOrRewind(Int64.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == UInt64.self { return try readScalarOrRewind(UInt64.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == Int32.self { return try readScalarOrRewind(Int32.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == UInt32.self { return try readScalarOrRewind(UInt32.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == Int16.self { return try readScalarOrRewind(Int16.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == UInt16.self { return try readScalarOrRewind(UInt16.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == Int8.self { return try readScalarOrRewind(Int8.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == UInt8.self { return try readScalarOrRewind(UInt8.self, &parser, startOffset, path, readInteger) as! T }
+        if T.self == UInt.self { return try readScalarOrRewind(UInt.self, &parser, startOffset, path, readInteger) as! T }
+        let foundation = MessagePackFoundationTypes.shared
+        if ObjectIdentifier(T.self) == foundation.date {
+            return try readScalarOrRewind(Date.self, &parser, startOffset, path, readDate) as! T
         }
-        if T.self == [Int].self { return try primitiveArray(&parser, codingPath, readInteger) as [Int] as! T }
-        if T.self == [String].self { return try primitiveArray(&parser, codingPath, readString) as! T }
-        if T.self == [Double].self { return try primitiveArray(&parser, codingPath, readDouble) as! T }
-        if T.self == [Bool].self { return try primitiveArray(&parser, codingPath, readBool) as! T }
-        if T.self == [Float].self { return try primitiveArray(&parser, codingPath, readFloat) as! T }
-        if T.self == [Int64].self { return try primitiveArray(&parser, codingPath, readInteger) as [Int64] as! T }
-        if T.self == [UInt64].self { return try primitiveArray(&parser, codingPath, readInteger) as [UInt64] as! T }
-        if T.self == [Int32].self { return try primitiveArray(&parser, codingPath, readInteger) as [Int32] as! T }
-        if T.self == [UInt32].self { return try primitiveArray(&parser, codingPath, readInteger) as [UInt32] as! T }
-        if T.self == [Int16].self { return try primitiveArray(&parser, codingPath, readInteger) as [Int16] as! T }
-        if T.self == [UInt16].self { return try primitiveArray(&parser, codingPath, readInteger) as [UInt16] as! T }
-        if T.self == [Int8].self { return try primitiveArray(&parser, codingPath, readInteger) as [Int8] as! T }
-        if T.self == [UInt8].self { return try primitiveArray(&parser, codingPath, readInteger) as [UInt8] as! T }
-        if T.self == [UInt].self { return try primitiveArray(&parser, codingPath, readInteger) as [UInt] as! T }
-        let path = codingPath()
-        let impl = MessagePackDecoderImpl(
-            context: context, offset: startOffset, codingPath: path)
+        if ObjectIdentifier(T.self) == foundation.data {
+            return try readScalarOrRewind(Data.self, &parser, startOffset, path, readBinary) as! T
+        }
+        if T.self == MessagePackTimestamp.self {
+            return try readScalarOrRewind(MessagePackTimestamp.self, &parser, startOffset, path, readTimestamp) as! T
+        }
+
+        return try decodeWithContainers(type, parser: &parser, context: context, path: path())
+    }
+
+    /// Decodes a value through its `Decodable` conformance and the container
+    /// machinery, advancing the parser past it.
+    static func decodeWithContainers<T: Decodable>(
+        _ type: T.Type,
+        parser: inout Parser,
+        context: MessagePackDecodingContext,
+        path: MessagePackCodingPath
+    ) throws -> T {
+        let startOffset = parser.offset
+        let impl = MessagePackDecoderImpl(context: context, offset: startOffset, path: path)
+
+        let state = context.state
+        let outerOffset = state.pointee.decodingOffset
+        let outerStorage = state.pointee.decodingStorage
+        state.pointee.decodingOffset = startOffset
+        state.pointee.decodingStorage = nil
+        defer {
+            state.pointee.decodingOffset = outerOffset
+            state.pointee.decodingStorage = outerStorage
+        }
+
         let value = try type.init(from: impl)
-        if context.memoStart == startOffset {
-            parser.offset = context.memoEnd
+
+        if let storage = state.pointee.decodingStorage {
+            do throws(MessagePackError) {
+                parser.offset = try storage.end(context)
+            } catch {
+                throw corrupted(error, path, offset: startOffset)
+            }
+        } else if state.pointee.memoStart == startOffset {
+            parser.offset = state.pointee.memoEnd
         } else {
             try skip(&parser, path: path)
         }
+
         return value
     }
 }
@@ -437,17 +500,19 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
     let context: MessagePackDecodingContext
     /// The byte offset of the value this decoder decodes.
     let offset: Int
-    let codingPath: [CodingKey]
+    let path: MessagePackCodingPath
+
+    var codingPath: [CodingKey] { path.keys }
 
     var userInfo: [CodingUserInfoKey: Any] { context.userInfo }
 
     /// Guards against unbounded recursion through recursive `Decodable`
     /// types fed deeply nested hostile input. Every nesting level appends to
-    /// `codingPath`, so its length tracks the container depth (mirroring the
-    /// serializer's `maxDepth` protection).
+    /// the coding path, so its depth tracks the container depth (mirroring
+    /// the serializer's `maxDepth` protection).
     private func checkDepth() throws {
-        guard codingPath.count < MessagePackDecoding.maxDepth else {
-            throw MessagePackDecoding.corrupted(.depthLimitExceeded, codingPath)
+        guard path.depth < MessagePackDecoding.maxDepth else {
+            throw MessagePackDecoding.corrupted(.depthLimitExceeded, path, offset: offset)
         }
     }
 
@@ -458,29 +523,25 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         do throws(MessagePackError) {
             entryCount = try parser.readRawMapHeader()
         } catch {
-            throw MessagePackDecoding.corrupted(error, codingPath)
+            throw MessagePackDecoding.corrupted(error, path, offset: offset)
         }
         guard let entryCount else {
-            throw MessagePackDecoding.wrongType([String: Any].self, parser, codingPath)
+            throw MessagePackDecoding.wrongType([String: Any].self, parser, path)
         }
         // Each entry needs at least two bytes; reject hostile counts before
         // reserving storage.
         guard entryCount <= (parser.count - parser.offset) / 2 else {
-            throw MessagePackDecoding.corrupted(.insufficientData, codingPath)
+            throw MessagePackDecoding.corrupted(.insufficientData, path, offset: offset)
         }
         let storage = context.borrowKeyedStorage()
-        do throws(MessagePackError) {
-            try storage.scan(entryCount: entryCount, parser: &parser)
-        } catch {
-            throw MessagePackDecoding.corrupted(error, codingPath)
+        storage.reset(firstKeyOffset: parser.offset, entryCount: entryCount)
+        if context.state.pointee.decodingOffset == offset {
+            context.state.pointee.decodingStorage = storage
         }
-        // The scan just found this map's end; remember it so `unwrap` does
-        // not have to skip the map again.
-        context.memoStart = offset
-        context.memoEnd = parser.offset
+
         return KeyedDecodingContainer(
             MessagePackKeyedDecodingContainer<Key>(
-                context: context, storage: storage, codingPath: codingPath))
+                context: context, storage: storage, offset: offset, path: path))
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
@@ -490,16 +551,16 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         do throws(MessagePackError) {
             elementCount = try parser.readRawArrayHeader()
         } catch {
-            throw MessagePackDecoding.corrupted(error, codingPath)
+            throw MessagePackDecoding.corrupted(error, path, offset: offset)
         }
         guard let elementCount else {
-            throw MessagePackDecoding.wrongType([Any].self, parser, codingPath)
+            throw MessagePackDecoding.wrongType([Any].self, parser, path)
         }
         guard elementCount <= parser.count - parser.offset else {
-            throw MessagePackDecoding.corrupted(.insufficientData, codingPath)
+            throw MessagePackDecoding.corrupted(.insufficientData, path, offset: offset)
         }
         return MessagePackUnkeyedDecodingContainer(
-            context: context, codingPath: codingPath, elementCount: elementCount,
+            context: context, path: path, elementCount: elementCount,
             startOffset: offset, parser: parser)
     }
 
@@ -518,13 +579,7 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         _ type: T.Type,
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T {
-        var parser = context.parser(at: offset)
-        do throws(MessagePackDecodeFailure) {
-            return try read(&parser)
-        } catch {
-            throw MessagePackDecoding.decodingError(
-                error, type: type, parser: parser, path: codingPath)
-        }
+        try MessagePackDecoding.decodeScalar(type, context: context, offset: offset, path: path, read)
     }
 
     func decode(_ type: Bool.Type) throws -> Bool {
@@ -556,8 +611,16 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
 
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
         var parser = context.parser(at: offset)
-        return try MessagePackDecoding.unwrap(
-            type, parser: &parser, context: context, codingPath: codingPath)
+        let value = try MessagePackDecoding.unwrap(
+            type, parser: &parser, context: context, path: path)
+
+        // This decoder's own value ends where the one it wraps does. The
+        // `unwrap` that created this decoder (for `Optional` and other
+        // single-value wrappers) would otherwise skip the value again.
+        context.state.pointee.memoStart = offset
+        context.state.pointee.memoEnd = parser.offset
+
+        return value
     }
 }
 

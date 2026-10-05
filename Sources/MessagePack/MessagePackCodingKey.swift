@@ -39,9 +39,5 @@ struct MessagePackCodingKey: CodingKey {
         value = .index(intValue)
     }
 
-    init(index: Int) {
-        value = .index(index)
-    }
-
     static let `super` = MessagePackCodingKey(stringValue: "super")
 }

@@ -2,53 +2,185 @@ import Foundation
 
 // MARK: - Keyed container
 
-/// Entry offsets for one wire map, scanned once at container creation.
-/// A class so the rolling search index survives the container being copied
-/// into `KeyedDecodingContainer`'s box. Instances are recycled through
-/// ``MessagePackDecodingContext/borrowKeyedStorage()``, so `scan` must leave
-/// no state behind from a previous use.
-final class MessagePackKeyedStorage {
+/// Entry offsets for one wire map, scanned lazily: the scan stops at each
+/// array or map value until a lookup needs to go past it, and a nested
+/// value's end is recorded when the value is decoded. Keys are usually
+/// requested in wire order, so the scan resumes where that value was decoded
+/// to, and every byte of a nested value is walked once, by its own decoder,
+/// instead of once more by every enclosing map's scan.
+///
+/// A class so it can be recycled across the containers of one `decode`
+/// call through ``MessagePackDecodingContext/borrowKeyedStorage()`` (so
+/// `reset` must leave no state behind from a previous use) and referred to
+/// from the context while its value is being decoded.
+final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State, Void> {
     struct Entry {
         let keyOffset: Int
+        /// The byte count of a string key, whose bytes end where the value
+        /// starts, or -1 for any other key.
+        let keyLength: Int
         let valueOffset: Int
     }
 
-    var entries: [Entry] = []
-    /// Where the next key lookup starts. Keys are usually requested in wire
-    /// order, so remembering the last match makes typical lookups O(1).
-    var searchIndex = 0
+    struct State {
+        /// The entries scanned so far, in wire order. Each value ends where
+        /// the next entry's key starts, so only the last one's end is kept.
+        var entries: [Entry] = []
+        /// Where the last scanned entry's value ends, or -1 until that value
+        /// is decoded or skipped.
+        var lastValueEnd = -1
+        var entryCount = 0
+        /// The entry of the last key match, where the next lookup starts.
+        var searchIndex = 0
+        var firstKeyOffset = 0
+    }
 
-    func scan(
-        entryCount: Int, parser: inout MessagePackSerializer.Parser
-    ) throws(MessagePackError) {
-        // Build into a local array (with the stored one detached so the
-        // local is uniquely referenced), keeping the append loop free of
-        // class-property exclusivity and uniqueness checks.
-        var scanned = entries
-        entries = []
-        searchIndex = 0
-        scanned.removeAll(keepingCapacity: true)
-        scanned.reserveCapacity(entryCount)
-        for _ in 0..<entryCount {
-            let keyOffset = parser.offset
-            try parser.skipValue()
+    /// The state lives in the buffer's header, allocated with the object
+    /// (as swift-collections does), and is reached through a pointer so the
+    /// lookup and scan paths bypass dynamic exclusivity enforcement on
+    /// class properties.
+    private var state: UnsafeMutablePointer<State> {
+        withUnsafeMutablePointerToHeader { $0 }
+    }
+
+    static func make() -> MessagePackKeyedStorage {
+        unsafeDowncast(create(minimumCapacity: 0) { _ in State() }, to: MessagePackKeyedStorage.self)
+    }
+
+    var entryCount: Int { state.pointee.entryCount }
+    var scannedCount: Int { state.pointee.entries.count }
+
+    var searchIndex: Int {
+        get { state.pointee.searchIndex }
+        set { state.pointee.searchIndex = newValue }
+    }
+
+    func entry(at index: Int) -> Entry {
+        state.pointee.entries[index]
+    }
+
+    func reset(firstKeyOffset: Int, entryCount: Int) {
+        state.pointee.firstKeyOffset = firstKeyOffset
+        state.pointee.entryCount = entryCount
+        state.pointee.searchIndex = 0
+        state.pointee.lastValueEnd = -1
+
+        state.pointee.entries.removeAll(keepingCapacity: true)
+        state.pointee.entries.reserveCapacity(Swift.min(entryCount, messagePackMaxPreallocation))
+    }
+
+    /// Scans ahead: entries with scalar, string, or binary values are
+    /// scanned in one go, as skipping those costs next to nothing, and the
+    /// scan stops after the first entry whose value is an array or map,
+    /// whose end is only known cheaply once it has been decoded.
+    func scanAhead(_ context: MessagePackDecodingContext) throws(MessagePackError) {
+        let entryCount = entryCount
+        var scannedCount = scannedCount
+        var keyOffset = try scannedEnd(context)
+
+        while scannedCount < entryCount {
+            var parser = context.parser(at: keyOffset)
+            let keyLength: Int
+            if let keyBytes = try parser.readRawStringBytes() {
+                keyLength = keyBytes.count
+            } else {
+                try parser.skipValue()
+                keyLength = -1
+            }
             let valueOffset = parser.offset
-            try parser.skipValue()
-            scanned.append(Entry(keyOffset: keyOffset, valueOffset: valueOffset))
+            let isContainer = Self.isContainer(try parser.peekFormat())
+            if !isContainer {
+                try parser.skipValue()
+            }
+
+            state.pointee.entries.append(Entry(keyOffset: keyOffset, keyLength: keyLength, valueOffset: valueOffset))
+            if isContainer {
+                state.pointee.lastValueEnd = -1
+                return
+            }
+
+            state.pointee.lastValueEnd = parser.offset
+            scannedCount &+= 1
+            keyOffset = parser.offset
         }
-        entries = scanned
+    }
+
+    @inline(__always)
+    private static func isContainer(_ format: UInt8) -> Bool {
+        (0x80...0x9f).contains(format) || (0xdc...0xdf).contains(format)
+    }
+
+    /// Records where a decoded value ends. Only the last scanned entry's end
+    /// is not already known, as the next entry's key.
+    func recordValueEnd(_ end: Int, at index: Int) {
+        if index == scannedCount &- 1 {
+            state.pointee.lastValueEnd = end
+        }
+    }
+
+    /// Where the scanned entries end, which is where the next entry's key
+    /// starts (or the map ends), skipping over the last scanned value the
+    /// first time it is asked for undecoded.
+    private func scannedEnd(_ context: MessagePackDecodingContext) throws(MessagePackError) -> Int {
+        guard let last = state.pointee.entries.last else {
+            return state.pointee.firstKeyOffset
+        }
+
+        if state.pointee.lastValueEnd < 0 {
+            var parser = context.parser(at: last.valueOffset)
+            try parser.skipValue()
+            state.pointee.lastValueEnd = parser.offset
+        }
+
+        return state.pointee.lastValueEnd
+    }
+
+    /// Scans the entries no lookup reached and returns where the map ends.
+    func end(_ context: MessagePackDecodingContext) throws(MessagePackError) -> Int {
+        while scannedCount < entryCount {
+            try scanAhead(context)
+        }
+
+        return try scannedEnd(context)
     }
 }
 
-struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
+/// The outcome of a key lookup. Declared outside the generic container so
+/// it is not generic over `Key`: nested there, its metadata was instantiated
+/// at run time on every lookup.
+private enum MessagePackKeyLookup {
+    case found(Int)
+    case missing
+    case failed(MessagePackError)
+}
+
+final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
     let context: MessagePackDecodingContext
     let storage: MessagePackKeyedStorage
-    let codingPath: [CodingKey]
+    /// The byte offset of the map, where errors about the map point.
+    let offset: Int
+    let path: MessagePackCodingPath
+
+    var codingPath: [CodingKey] { path.keys }
+
+    init(
+        context: MessagePackDecodingContext, storage: MessagePackKeyedStorage, offset: Int, path: MessagePackCodingPath
+    ) {
+        self.context = context
+        self.storage = storage
+        self.offset = offset
+        self.path = path
+    }
 
     var allKeys: [Key] {
+        // A map that fails to scan lists the keys before the failure; the
+        // failure itself surfaces when the value's end is needed.
+        _ = try? storage.end(context)
+
         var keys: [Key] = []
-        keys.reserveCapacity(storage.entries.count)
-        for entry in storage.entries {
+        keys.reserveCapacity(storage.scannedCount)
+        for index in 0..<storage.scannedCount {
+            let entry = storage.entry(at: index)
             var parser = context.parser(at: entry.keyOffset)
             if let string = ((try? parser.readRawString()) ?? nil) {
                 if let key = Key(stringValue: string) { keys.append(key) }
@@ -66,47 +198,75 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         return keys
     }
 
-    /// Finds the value offset for a key by comparing raw key bytes in place;
-    /// no `String` is materialized for wire keys.
-    private func valueOffset(stringValue: String, intValue: Int?) -> Int? {
-        let entries = storage.entries
-        let entryCount = entries.count
-        guard entryCount > 0 else { return nil }
-        var keyString = stringValue
-        return keyString.withUTF8 { (keyBytes: UnsafeBufferPointer<UInt8>) -> Int? in
-            var index = storage.searchIndex
-            for _ in 0..<entryCount {
-                if index >= entryCount { index = 0 }
-                let entry = entries[index]
-                index += 1
-                if matches(keyBytes: keyBytes, intValue: intValue, at: entry.keyOffset) {
-                    // Remember the match itself (not the next entry): the
-                    // default decodeIfPresent looks the same key up three
-                    // times (contains → decodeNil → decode), and this keeps
-                    // repeats O(1) while sequential access stays O(1).
-                    storage.searchIndex = index - 1
-                    return entry.valueOffset
-                }
-            }
+    /// Finds the entry for a key by comparing raw key bytes in place (no
+    /// `String` is materialized for wire keys), scanning entries as needed.
+    private func entryIndex(for key: some CodingKey) throws -> Int? {
+        guard storage.entryCount > 0 else { return nil }
+
+        var keyString = key.stringValue
+        let lookup = keyString.withUTF8 { keyBytes in
+            lookUp(keyBytes: keyBytes, key: key)
+        }
+
+        switch lookup {
+        case .found(let index):
+            storage.searchIndex = index
+            return index
+        case .missing:
             return nil
+        case .failed(let error):
+            throw MessagePackDecoding.corrupted(error, path, offset: offset)
         }
     }
 
-    private func matches(
-        keyBytes: UnsafeBufferPointer<UInt8>, intValue: Int?, at keyOffset: Int
-    ) -> Bool {
-        var parser = context.parser(at: keyOffset)
-        // A truncated string key also lands here (`readRawStringBytes` throws
-        // rather than returning nil); the integer path then rejects it, which
-        // is the same answer a direct byte comparison would give.
-        guard let wireBytes = ((try? parser.readRawStringBytes()) ?? nil) else {
-            return matchesIntegerKey(intValue, at: keyOffset)
+    /// Searches from the last match (inclusive) forwards, wrapping around,
+    /// as earlier versions did: keys requested in wire order are found one
+    /// entry after the previous match, a key asked for again (`contains`
+    /// before `decode`) at it, and of duplicate keys the same entry is found
+    /// as before. Entries are scanned as the search reaches them.
+    private func lookUp(keyBytes: UnsafeBufferPointer<UInt8>, key: some CodingKey) -> MessagePackKeyLookup {
+        let entryCount = storage.entryCount
+        let start = storage.searchIndex
+
+        do throws(MessagePackError) {
+            var index = start
+            repeat {
+                if index == storage.scannedCount {
+                    try storage.scanAhead(context)
+                }
+                if matches(keyBytes: keyBytes, key: key, at: index) {
+                    return .found(index)
+                }
+                index &+= 1
+                if index == entryCount {
+                    index = 0
+                }
+            } while index != start
+
+            return .missing
+        } catch {
+            return .failed(error)
         }
-        guard wireBytes.count == keyBytes.count else { return false }
-        guard let wireBase = wireBytes.baseAddress, let keyBase = keyBytes.baseAddress else {
-            return wireBytes.isEmpty
+    }
+
+    private func matches(keyBytes: UnsafeBufferPointer<UInt8>, key: some CodingKey, at index: Int) -> Bool {
+        let entry = storage.entry(at: index)
+        guard entry.keyLength >= 0 else {
+            // Asked for only here: string keys are the common case, and the
+            // `intValue` of a key type is a call through its conformance.
+            return matchesIntegerKey(key.intValue, at: entry.keyOffset)
         }
-        return memcmp(wireBase, keyBase, wireBytes.count) == 0
+        guard entry.keyLength == keyBytes.count else {
+            return false
+        }
+        guard entry.keyLength > 0, let keyBase = keyBytes.baseAddress, let base = context.state.pointee.base else {
+            // Empty keys match; any other key has bytes on both sides.
+            return entry.keyLength == 0
+        }
+
+        // The scan recorded where the key's bytes are, so this is a length
+        // check and a `memcmp`, without parsing the key's header again.
+        return memcmp(base + (entry.valueOffset &- entry.keyLength), keyBase, keyBytes.count) == 0
     }
 
     /// Matches a non-string wire key against the coding key's `intValue`.
@@ -120,8 +280,8 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         }
     }
 
-    private func requireOffset(_ key: Key) throws -> Int {
-        guard let offset = valueOffset(stringValue: key.stringValue, intValue: key.intValue) else {
+    private func requireEntry(_ key: Key) throws -> Int {
+        guard let index = try entryIndex(for: key) else {
             throw DecodingError.keyNotFound(
                 key,
                 DecodingError.Context(
@@ -129,29 +289,61 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
                     debugDescription: "No value associated with key \"\(key.stringValue)\""
                 ))
         }
-        return offset
+        return index
+    }
+
+    private func valueOffset(_ key: Key) throws -> Int {
+        // The lookup may scan (and append to) the entries, so it has to run
+        // before they are read.
+        let index = try requireEntry(key)
+        return storage.entry(at: index).valueOffset
     }
 
     func contains(_ key: Key) -> Bool {
-        valueOffset(stringValue: key.stringValue, intValue: key.intValue) != nil
+        (try? entryIndex(for: key)) != nil
     }
 
     func decodeNil(forKey key: Key) throws -> Bool {
-        let parser = context.parser(at: try requireOffset(key))
+        let parser = context.parser(at: try valueOffset(key))
         return ((try? parser.peekFormat()) ?? 0xc1) == 0xc0
     }
 
+    /// The entry for a key whose value is present and not nil. One lookup
+    /// serves all of `decodeIfPresent`, where the default implementation
+    /// looks the key up three times (`contains`, `decodeNil`, `decode`);
+    /// `PropertyListDecoder` avoids that the same way.
+    private func presentEntry(_ key: Key) throws -> Int? {
+        guard let index = try entryIndex(for: key) else {
+            return nil
+        }
+        var parser = context.parser(at: storage.entry(at: index).valueOffset)
+        return parser.readRawNil() ? nil : index
+    }
+
+    // The scalar wrappers stay inline so that each `decode(_:forKey:)`
+    // overload calls a `decodeScalar` specialized for its value type: the
+    // container is generic over `Key`, and as its own methods the helpers
+    // were left unspecialized, passing the type and the read closure at run
+    // time. The read itself is shared by all key types.
+
+    @inline(__always)
     private func decodeScalar<T>(
         _ type: T.Type, forKey key: Key,
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T {
-        var parser = context.parser(at: try requireOffset(key))
-        do throws(MessagePackDecodeFailure) {
-            return try read(&parser)
-        } catch {
-            throw MessagePackDecoding.decodingError(
-                error, type: type, parser: parser, path: codingPath + [key])
-        }
+        try MessagePackDecoding.decodeScalar(
+            type, context: context, offset: try valueOffset(key), path: path.appending(key), read)
+    }
+
+    @inline(__always)
+    private func decodeScalarIfPresent<T>(
+        _ type: T.Type, forKey key: Key,
+        _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
+    ) throws -> T? {
+        guard let index = try presentEntry(key) else { return nil }
+
+        return try MessagePackDecoding.decodeScalar(
+            type, context: context, offset: storage.entry(at: index).valueOffset, path: path.appending(key), read)
     }
 
     func decode(_ type: Bool.Type, forKey key: Key) throws -> Bool {
@@ -211,43 +403,112 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     }
 
     func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
-        var parser = context.parser(at: try requireOffset(key))
-        return try MessagePackDecoding.unwrap(
-            type, parser: &parser, context: context, codingPath: codingPath + [key])
+        try decode(type, entry: try requireEntry(key), forKey: key)
+    }
+
+    func decodeIfPresent(_ type: Bool.Type, forKey key: Key) throws -> Bool? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readBool)
+    }
+
+    func decodeIfPresent(_ type: String.Type, forKey key: Key) throws -> String? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readString)
+    }
+
+    func decodeIfPresent(_ type: Double.Type, forKey key: Key) throws -> Double? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readDouble)
+    }
+
+    func decodeIfPresent(_ type: Float.Type, forKey key: Key) throws -> Float? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readFloat)
+    }
+
+    func decodeIfPresent(_ type: Int.Type, forKey key: Key) throws -> Int? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: Int8.Type, forKey key: Key) throws -> Int8? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: Int16.Type, forKey key: Key) throws -> Int16? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: Int32.Type, forKey key: Key) throws -> Int32? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: Int64.Type, forKey key: Key) throws -> Int64? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt.Type, forKey key: Key) throws -> UInt? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt8.Type, forKey key: Key) throws -> UInt8? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt16.Type, forKey key: Key) throws -> UInt16? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt32.Type, forKey key: Key) throws -> UInt32? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent(_ type: UInt64.Type, forKey key: Key) throws -> UInt64? {
+        try decodeScalarIfPresent(type, forKey: key, MessagePackDecoding.readInteger)
+    }
+
+    func decodeIfPresent<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T? {
+        guard let index = try presentEntry(key) else { return nil }
+        return try decode(type, entry: index, forKey: key)
+    }
+
+    /// Decodes the value of an entry and records where it ends, which is
+    /// where the next entry's key starts.
+    private func decode<T: Decodable>(_ type: T.Type, entry index: Int, forKey key: Key) throws -> T {
+        var parser = context.parser(at: storage.entry(at: index).valueOffset)
+        let value = try MessagePackDecoding.unwrap(
+            type, parser: &parser, context: context, path: path.appending(key))
+        storage.recordValueEnd(parser.offset, at: index)
+
+        return value
     }
 
     func nestedContainer<NestedKey: CodingKey>(
         keyedBy type: NestedKey.Type, forKey key: Key
     ) throws -> KeyedDecodingContainer<NestedKey> {
         let impl = MessagePackDecoderImpl(
-            context: context, offset: try requireOffset(key), codingPath: codingPath + [key])
+            context: context, offset: try valueOffset(key), path: path.appending(key))
         return try impl.container(keyedBy: NestedKey.self)
     }
 
     func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
         let impl = MessagePackDecoderImpl(
-            context: context, offset: try requireOffset(key), codingPath: codingPath + [key])
+            context: context, offset: try valueOffset(key), path: path.appending(key))
         return try impl.unkeyedContainer()
     }
 
     /// Mirroring `JSONDecoder`, a missing entry yields a decoder positioned
     /// on a nil value rather than throwing `keyNotFound`.
-    private func superDecoder(stringValue: String, intValue: Int?, key: CodingKey) -> Decoder {
-        guard let offset = valueOffset(stringValue: stringValue, intValue: intValue) else {
+    private func superDecoder(for key: some CodingKey) throws -> Decoder {
+        guard let index = try entryIndex(for: key) else {
             return MessagePackNilDecoder(
-                codingPath: codingPath + [key], userInfo: context.userInfo)
+                codingPath: path.appending(key).keys, userInfo: context.userInfo)
         }
         return MessagePackDecoderImpl(
-            context: context, offset: offset, codingPath: codingPath + [key])
+            context: context, offset: storage.entry(at: index).valueOffset, path: path.appending(key))
     }
 
     func superDecoder() throws -> Decoder {
-        let superKey = MessagePackCodingKey.super
-        return superDecoder(stringValue: superKey.stringValue, intValue: nil, key: superKey)
+        try superDecoder(for: MessagePackCodingKey.super)
     }
 
     func superDecoder(forKey key: Key) throws -> Decoder {
-        superDecoder(stringValue: key.stringValue, intValue: key.intValue, key: key)
+        try superDecoder(for: key)
     }
 }
 
@@ -309,7 +570,7 @@ struct MessagePackNilDecoder: Decoder, SingleValueDecodingContainer {
 
 struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     let context: MessagePackDecodingContext
-    let codingPath: [CodingKey]
+    let path: MessagePackCodingPath
     let elementCount: Int
     /// Where this array value starts, for the end-of-container memo.
     let startOffset: Int
@@ -317,6 +578,7 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     var parser: MessagePackSerializer.Parser
     var currentIndex = 0
 
+    var codingPath: [CodingKey] { path.keys }
     var count: Int? { elementCount }
     var isAtEnd: Bool { currentIndex >= elementCount }
 
@@ -326,8 +588,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     private mutating func advanceIndex() {
         currentIndex += 1
         if currentIndex == elementCount {
-            context.memoStart = startOffset
-            context.memoEnd = parser.offset
+            context.state.pointee.memoStart = startOffset
+            context.state.pointee.memoEnd = parser.offset
         }
     }
 
@@ -336,7 +598,7 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
             throw DecodingError.valueNotFound(
                 type,
                 DecodingError.Context(
-                    codingPath: codingPath + [MessagePackCodingKey(index: currentIndex)],
+                    codingPath: path.appending(index: currentIndex).keys,
                     debugDescription: "Unkeyed container is at end"
                 ))
         }
@@ -369,7 +631,7 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
             parser.offset = elementStart
             throw MessagePackDecoding.decodingError(
                 error, type: type, parser: parser,
-                path: codingPath + [MessagePackCodingKey(index: currentIndex)])
+                path: path.appending(index: currentIndex))
         }
     }
 
@@ -433,11 +695,10 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         try checkEnd(type)
         // Local copies so the lazy coding-path closure does not capture
         // `self` while `parser` is passed inout.
-        let parentPath = codingPath
+        let parentPath = path
         let index = currentIndex
         let value = try MessagePackDecoding.unwrap(
-            type, parser: &parser, context: context,
-            codingPath: parentPath + [MessagePackCodingKey(index: index)])
+            type, parser: &parser, context: context, path: parentPath.appending(index: index))
         advanceIndex()
         return value
     }
@@ -446,29 +707,29 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         keyedBy type: NestedKey.Type
     ) throws -> KeyedDecodingContainer<NestedKey> {
         try checkEnd(KeyedDecodingContainer<NestedKey>.self)
-        let path = codingPath + [MessagePackCodingKey(index: currentIndex)]
-        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, codingPath: path)
+        let elementPath = path.appending(index: currentIndex)
+        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, path: elementPath)
         let container = try impl.container(keyedBy: NestedKey.self)
-        try MessagePackDecoding.skip(&parser, path: path)
+        try MessagePackDecoding.skip(&parser, path: elementPath)
         advanceIndex()
         return container
     }
 
     mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
         try checkEnd(UnkeyedDecodingContainer.self)
-        let path = codingPath + [MessagePackCodingKey(index: currentIndex)]
-        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, codingPath: path)
+        let elementPath = path.appending(index: currentIndex)
+        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, path: elementPath)
         let container = try impl.unkeyedContainer()
-        try MessagePackDecoding.skip(&parser, path: path)
+        try MessagePackDecoding.skip(&parser, path: elementPath)
         advanceIndex()
         return container
     }
 
     mutating func superDecoder() throws -> Decoder {
         try checkEnd(Decoder.self)
-        let path = codingPath + [MessagePackCodingKey(index: currentIndex)]
-        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, codingPath: path)
-        try MessagePackDecoding.skip(&parser, path: path)
+        let elementPath = path.appending(index: currentIndex)
+        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, path: elementPath)
+        try MessagePackDecoding.skip(&parser, path: elementPath)
         advanceIndex()
         return impl
     }
