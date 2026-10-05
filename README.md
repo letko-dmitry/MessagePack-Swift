@@ -174,11 +174,12 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   `EncodingError.invalidValue` otherwise.
 - `Decimal`, which MessagePack has no type for, goes through its own
   `Codable` conformance (a map of its fields) by default. As an option,
-  `MessagePackEncoder(decimalEncodingStrategy: .string)` writes a string of
-  its exact digits (`"0.35"`, 5 bytes instead of about 60), and
-  `MessagePackDecoder(decimalDecodingFormats:)` lists the formats a
-  `Decimal` is read from: `.map` (the default), `.string`, `.integer`, and
-  `.float`. Versions before the option cannot read the string.
+  `MessagePackEncoder(decimalEncodingStrategy: .convertToString)` writes a
+  string of its exact digits (`"0.35"`, 5 bytes instead of about 60), and
+  `MessagePackDecoder(decimalDecodingStrategy:)` takes the set of formats a
+  `Decimal` is read from: `.deferredToDecimal` (the map, the default),
+  `.convertFromString`, `.convertFromInteger`, and `.convertFromFloat`.
+  Versions before the option cannot read the string.
 - The `Encoder`/`Decoder` and containers handed to `encode(to:)` and
   `init(from:)` are valid only during that `encode`/`decode` call (they
   refer to state on its stack); conformances must not store them.

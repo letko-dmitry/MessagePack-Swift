@@ -47,9 +47,11 @@ struct CodableDecimalTests {
 
 @Suite("Codable Decimal options")
 struct CodableDecimalOptionTests {
-    private static let stringEncoder = MessagePackEncoder(decimalEncodingStrategy: .string)
+    private static let stringEncoder = MessagePackEncoder(decimalEncodingStrategy: .convertToString)
 
-    private static let anyFormatDecoder = MessagePackDecoder(decimalDecodingFormats: [.map, .string, .integer, .float])
+    private static let anyFormatDecoder = MessagePackDecoder(
+        decimalDecodingStrategy: [.deferredToDecimal, .convertFromString, .convertFromInteger, .convertFromFloat]
+    )
 
     @Test func stringStrategyWritesTheExactDigits() throws {
         let decimal = try #require(Decimal(string: "0.35"))
@@ -59,7 +61,7 @@ struct CodableDecimalOptionTests {
     }
 
     @Test func bothEncodingsRoundTripExactly() throws {
-        let decoder = MessagePackDecoder(decimalDecodingFormats: [.map, .string])
+        let decoder = MessagePackDecoder(decimalDecodingStrategy: [.deferredToDecimal, .convertFromString])
         for encoder in [MessagePackEncoder(), Self.stringEncoder] {
             for text in ["0.35", "-12.5", "0", "12345678901234567890123456789012345678.5", "0.0000001"] {
                 let decimal = try #require(Decimal(string: text))
@@ -100,15 +102,15 @@ struct CodableDecimalOptionTests {
     /// A format left out of the set is a type mismatch, as for the default.
     @Test func otherFormatsAreAMismatch() throws {
         let decimal = try #require(Decimal(string: "0.35"))
-        let cases: [(MessagePackDecoder.DecimalDecodingFormats, Data)] = [
-            ([.string], try MessagePackEncoder().encode(decimal)),
-            ([.map], try Self.stringEncoder.encode(decimal)),
-            ([.map, .string, .float], try MessagePackSerializer.serialize(value: .uint8(3))),
-            ([.map, .string, .integer], try MessagePackSerializer.serialize(value: .float64(0.35))),
+        let cases: [(MessagePackDecoder.DecimalDecodingStrategy, Data)] = [
+            (.convertFromString, try MessagePackEncoder().encode(decimal)),
+            (.deferredToDecimal, try Self.stringEncoder.encode(decimal)),
+            ([.deferredToDecimal, .convertFromString, .convertFromFloat], try MessagePackSerializer.serialize(value: .uint8(3))),
+            ([.deferredToDecimal, .convertFromString, .convertFromInteger], try MessagePackSerializer.serialize(value: .float64(0.35))),
         ]
-        for (formats, data) in cases {
+        for (strategy, data) in cases {
             #expect {
-                try MessagePackDecoder(decimalDecodingFormats: formats).decode(Decimal.self, from: data)
+                try MessagePackDecoder(decimalDecodingStrategy: strategy).decode(Decimal.self, from: data)
             } throws: { error in
                 if case DecodingError.typeMismatch = error { true } else { false }
             }

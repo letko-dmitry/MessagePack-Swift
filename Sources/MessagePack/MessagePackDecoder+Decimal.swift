@@ -3,9 +3,9 @@ import Foundation
 // MARK: - Decimal
 
 extension MessagePackDecoding {
-    /// Decodes a `Decimal` from the formats in
-    /// ``MessagePackDecoder/decimalDecodingFormats``: the map of fields that
-    /// `Decimal`'s own `Codable` conformance writes (through that
+    /// Decodes a `Decimal` from the formats
+    /// ``MessagePackDecoder/decimalDecodingStrategy`` accepts: the map of
+    /// fields that `Decimal`'s own `Codable` conformance writes (through that
     /// conformance), a string of decimal digits, an integer (exactly), or a
     /// float (through its shortest decimal text, so a float 64 of 0.35
     /// decodes as 0.35 rather than 0.34999999999999997952).
@@ -14,23 +14,23 @@ extension MessagePackDecoding {
         context: MessagePackDecodingContext,
         path: () -> MessagePackCodingPath
     ) throws -> Decimal {
-        let formats = context.state.pointee.decimalDecodingFormats
-        if formats.contains(.map), let format = try? parser.peekFormat(), isMapFormat(format) {
+        let strategy = context.state.pointee.decimalDecodingStrategy
+        if strategy.contains(.deferredToDecimal), let format = try? parser.peekFormat(), isMapFormat(format) {
             return try decodeWithContainers(Decimal.self, parser: &parser, context: context, path: path())
         }
 
         return try readScalarOrRewind(Decimal.self, &parser, parser.offset, path) {
             (parser: inout Parser) throws(MessagePackDecodeFailure) -> Decimal in
-            try readDecimal(&parser, formats: formats)
+            try readDecimal(&parser, strategy: strategy)
         }
     }
 
-    /// Reads a string, integer, or float `Decimal` in one of `formats`;
+    /// Reads a string, integer, or float `Decimal` that `strategy` accepts;
     /// anything else is the wrong type.
     private static func readDecimal(
-        _ parser: inout Parser, formats: MessagePackDecoder.DecimalDecodingFormats
+        _ parser: inout Parser, strategy: MessagePackDecoder.DecimalDecodingStrategy
     ) throws(MessagePackDecodeFailure) -> Decimal {
-        if formats.contains(.string) {
+        if strategy.contains(.convertFromString) {
             let string: String?
             do throws(MessagePackError) {
                 string = try parser.readRawString()
@@ -46,7 +46,7 @@ extension MessagePackDecoding {
             }
         }
 
-        if formats.contains(.integer) {
+        if strategy.contains(.convertFromInteger) {
             let integer: MessagePackRawInteger?
             do throws(MessagePackError) {
                 integer = try parser.readRawInteger()
@@ -64,7 +64,7 @@ extension MessagePackDecoding {
             }
         }
 
-        if formats.contains(.float) {
+        if strategy.contains(.convertFromFloat) {
             // A float converts through its shortest text in the width it was
             // written in: widened to a Double first, a float 32 of 0.35 would
             // come out as 0.3499999940395355.

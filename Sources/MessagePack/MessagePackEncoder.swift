@@ -18,8 +18,9 @@ import Foundation
 /// - ``MessagePackTimestamp`` is encoded as the timestamp extension type.
 /// - `Decimal`, which MessagePack has no type for, is encoded through its own
 ///   `Codable` conformance (a map of its fields), or, with
-///   ``decimalEncodingStrategy`` set to ``DecimalEncodingStrategy/string``,
-///   as a string of its exact decimal digits such as `"0.35"`.
+///   ``decimalEncodingStrategy`` set to
+///   ``DecimalEncodingStrategy/convertToString``, as a string of its exact
+///   decimal digits such as `"0.35"`.
 ///
 /// Keyed containers are encoded as maps with string keys. Because encoding is
 /// streaming, writes must be well nested: a nested container (or an encoder
@@ -45,11 +46,12 @@ public struct MessagePackEncoder {
         /// map of its fields (`exponent`, `mantissa`, …). The default, and
         /// what earlier versions wrote.
         case deferredToDecimal
-        /// A string of the exact decimal digits (`"0.35"`): a fraction of
-        /// the map's size, and parsed by other languages' decimal types.
-        /// Decoders read it with ``MessagePackDecoder/DecimalDecodingFormats/string``
-        /// in their formats; versions before this option cannot.
-        case string
+        /// Converts to a string of the exact decimal digits (`"0.35"`): a
+        /// fraction of the map's size, and parsed by other languages' decimal
+        /// types. Decoders read it with
+        /// ``MessagePackDecoder/DecimalDecodingStrategy/convertFromString`` in
+        /// their strategy; versions before this option cannot.
+        case convertToString
     }
 
     /// Contextual information made available to the `Encodable` types via
@@ -351,7 +353,7 @@ struct MessagePackEncoderImpl {
             state.pointee.buffer.writeTimestamp(value.load(as: MessagePackTimestamp.self))
         } else if let collectionType = MessagePackCollectionType(type) {
             encodeCollection(collectionType, value)
-        } else if type == foundation.decimal, decimalEncodingStrategy == .string {
+        } else if type == foundation.decimal, decimalEncodingStrategy == .convertToString {
             encodeDecimal(value)
         } else {
             return .notNative
