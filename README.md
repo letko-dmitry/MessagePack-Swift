@@ -166,8 +166,11 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
 - Integers (and doubles that a float 32 holds exactly) encode with the
   smallest wire format; integers decode from any integer format that fits
   the requested type; out-of-range numbers (including float64 → `Float`
-  overflow) throw instead of truncating. `Int128`/`UInt128` encode when the
-  value fits in 64 bits and throw `EncodingError.invalidValue` otherwise.
+  overflow) throw instead of truncating. A float is a type mismatch for an
+  integer type, even when it holds a whole number: the spec deserializes the
+  float formats to its Float type and the int formats to Integer.
+  `Int128`/`UInt128` encode when the value fits in 64 bits and throw
+  `EncodingError.invalidValue` otherwise.
 - `Decimal`, which MessagePack has no type for, goes through its own
   `Codable` conformance (a map of its fields) by default. As an option,
   `MessagePackEncoder(decimalEncodingStrategy: .convertToString)` writes a
@@ -176,6 +179,10 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   `Decimal` is read from: `.deferredToDecimal` (the map, the default),
   `.convertFromString`, `.convertFromInteger`, and `.convertFromFloat`.
   Versions before the option cannot read the string.
+- Duplicate map keys, which the spec leaves to implementations: the value
+  tree and the macro route keep the last entry, while `Codable` (structs and
+  dictionaries alike) looks each key up from the previous match onwards, so
+  which entry a value gets depends on the order of the keys.
 - Encoder output is byte-identical to `MessagePackSerializer.serialize` of
   the equivalent value tree (smallest headers everywhere).
 - Both coders are `Sendable` (unchecked, value-semantic — like
@@ -273,4 +280,4 @@ Deserialization of a flat scalar array performs 1 allocation (the result array);
 swift test
 ```
 
-211 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with byte offsets, `Decimal`, and 128-bit integers), and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
+240 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).

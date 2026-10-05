@@ -142,6 +142,19 @@ struct CodableRobustnessTests {
         #expect(throws: EncodingError.self) {
             try MessagePackEncoder().encode(["key": EncodesNothing()])
         }
+
+        // The message names the type the value was encoded as.
+        class Base: Encodable {
+            func encode(to encoder: Encoder) throws {}
+        }
+        final class Derived: Base {}
+        let value: Base = Derived()
+        #expect {
+            try MessagePackEncoder().encode(value)
+        } throws: { error in
+            guard case EncodingError.invalidValue(_, let context) = error else { return false }
+            return context.debugDescription == "Value of type \(Base.self) did not encode any values"
+        }
     }
 
     // Finding 7: float64 values outside Float's range are rejected.

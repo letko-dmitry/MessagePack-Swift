@@ -158,3 +158,34 @@ struct Codable128BitIntegerTests {
         }
     }
 }
+
+// MARK: - Floats for integers
+
+/// The spec's deserialization maps float 32/64 to its Float type and the int
+/// formats to Integer, so a float is a type mismatch for an integer, even
+/// one holding a whole number.
+@Suite("Floats for integers")
+struct FloatsForIntegersTests {
+    @Test func floatsAreAMismatchForIntegers() throws {
+        for value: MessagePackValue in [.float64(5), .float32(-3), .float64(5.5)] {
+            let data = try MessagePackSerializer.serialize(value: value)
+            #expect {
+                try MessagePackDecoder().decode(Int.self, from: data)
+            } throws: { error in
+                if case DecodingError.typeMismatch = error { true } else { false }
+            }
+            #expect {
+                try MessagePackSerializer.deserialize(Int16.self, from: data)
+            } throws: { error in
+                if case MessagePackError.typeMismatch(expected: "integer", format: _) = error { true } else { false }
+            }
+        }
+    }
+
+    @Test func booleansAreAMismatchForIntegers() throws {
+        let data = try MessagePackSerializer.serialize(value: .bool(true))
+        #expect(throws: DecodingError.self) {
+            try MessagePackDecoder().decode(Int.self, from: data)
+        }
+    }
+}
