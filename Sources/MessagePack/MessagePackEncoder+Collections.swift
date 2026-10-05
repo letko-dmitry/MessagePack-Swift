@@ -45,8 +45,8 @@ extension MessagePackEncoderImpl {
 
     /// Writes an array of a natively represented element type with a tight
     /// loop, bypassing the unkeyed-container machinery. The count is known up
-    /// front, so the header is written at its final width directly — no
-    /// reserved header to compact in `finalize()`.
+    /// front, so the header is written at its final width directly, rather
+    /// than counted (and widened) entry by entry.
     ///
     /// Out of line, so each specialization is a small function in which the
     /// element writes are inlined: in the switch above, they were left as

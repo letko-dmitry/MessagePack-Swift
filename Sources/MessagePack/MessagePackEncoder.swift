@@ -3,11 +3,12 @@ import Foundation
 /// Encodes `Encodable` values into MessagePack binary data, analogous to
 /// `JSONEncoder`.
 ///
-/// Values are written in a single streaming pass into a growable buffer;
-/// container headers (whose element counts are unknown up front) are reserved
-/// at full width and compacted to the smallest spec format when encoding
-/// finishes, so the output is byte-identical to what
-/// ``MessagePackSerializer`` produces for the equivalent value tree.
+/// Values are written in a single streaming pass straight into the output.
+/// A container's header is written as a fixmap or fixarray when it opens and
+/// keeps the running entry count itself, widening in place to the 16- or
+/// 32-bit format if the container outgrows it, so the output is
+/// byte-identical to what ``MessagePackSerializer`` produces for the
+/// equivalent value tree.
 ///
 /// Special types:
 /// - `Date` is encoded as the timestamp extension type (-1). Dates whose
@@ -29,6 +30,10 @@ import Foundation
 /// detected and trap with a precondition failure instead of producing
 /// corrupt output. A `superEncoder()` that is never encoded into simply
 /// contributes nothing (its entry is written lazily on first use).
+///
+/// The `Encoder` and containers handed to `encode(to:)` are valid only while
+/// ``encode(_:)`` runs, as they write into memory on the call's stack; a
+/// conformance must not store them for later use.
 ///
 /// Like `JSONEncoder`, this type is marked `Sendable` with unchecked
 /// conformance: it has value semantics, but values stored in `userInfo` must
@@ -66,10 +71,20 @@ public struct MessagePackEncoder {
     /// encodes nothing, since MessagePack has no representation for "no
     /// value".
     public func encode<T: Encodable>(_ value: T) throws -> Data {
-        let impl = MessagePackEncoderImpl(userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy)
-        defer { impl.tearDown() }
-        try impl.encodeEncodable(value, codingPath: [])
-        return impl.finalize()
+        // The output starts in this frame's memory, so a small message is
+        // encoded without allocating a buffer for it.
+        try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) { memory in
+            let impl = MessagePackEncoderImpl(
+                memory: memory, userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy)
+            defer { impl.tearDown() }
+            do {
+                try impl.encodeEncodable(value, codingPath: [])
+            } catch {
+                impl.state.pointee.buffer.deallocate()
+                throw error
+            }
+            return impl.state.pointee.buffer.finish()
+        }
     }
 }
 
@@ -81,7 +96,7 @@ extension MessagePackEncoder: @unchecked Sendable {}
 /// the per-element hot path bypasses dynamic exclusivity enforcement on
 /// class properties.
 struct MessagePackEncoderState {
-    var buffer = MessagePackScratchBuffer()
+    var buffer: MessagePackScratchBuffer
 
     /// Stack of header positions of containers that are still open for
     /// writing. A write to a container pops any nested containers above it
@@ -125,7 +140,7 @@ struct MessagePackEncoderState {
     @inline(__always)
     mutating func beginEntry(at position: Int) -> Bool {
         if openContainers.last == position {
-            buffer.bumpContainerCount(at: position)
+            buffer.incrementContainerCount(at: position)
             return true
         }
         return beginEntrySlow(at: position)
@@ -137,7 +152,7 @@ struct MessagePackEncoderState {
             openContainers.removeLast()
         }
         guard openContainers.last == position else { return false }
-        buffer.bumpContainerCount(at: position)
+        buffer.incrementContainerCount(at: position)
         return true
     }
 }
@@ -145,41 +160,38 @@ struct MessagePackEncoderState {
 // MARK: - Shared encoder state
 
 final class MessagePackEncoderImpl {
-    /// A container header reserved in the scratch buffer, patched at the end.
-    /// The running element count lives in the reserved bytes themselves.
-    struct ContainerHeader {
-        let position: Int
-        let isMap: Bool
-    }
-
     /// The mutable encoding state. Owned by this instance; released by
     /// `tearDown()`.
     let state: UnsafeMutablePointer<MessagePackEncoderState>
-    var headers: [ContainerHeader] = []
     let userInfo: [CodingUserInfoKey: Any]
     let decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy
 
-    init(userInfo: [CodingUserInfoKey: Any], decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy) {
+    /// Writes into a buffer that starts in `memory`.
+    init(
+        memory: UnsafeMutableRawBufferPointer, userInfo: [CodingUserInfoKey: Any],
+        decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy
+    ) {
         self.state = .allocate(capacity: 1)
-        self.state.initialize(to: MessagePackEncoderState())
+        self.state.initialize(to: MessagePackEncoderState(buffer: MessagePackScratchBuffer(memory: memory)))
         self.userInfo = userInfo
         self.decimalEncodingStrategy = decimalEncodingStrategy
     }
 
-    /// Releases the encoding state. Must be called exactly once, after
-    /// encoding finishes (successfully or not).
+    /// Releases the encoding state, but not the buffer, which the caller
+    /// either hands to the result or releases. Must be called exactly once,
+    /// after encoding finishes (successfully or not).
     func tearDown() {
-        state.pointee.buffer.deallocate()
         state.deinitialize(count: 1)
         state.deallocate()
     }
 
-    /// Reserves a header slot for a new container and returns its buffer
-    /// position, which identifies the container for count bookkeeping.
+    /// Opens a container: writes its header as a fixmap or fixarray, which
+    /// counts (and widens) in place, and returns the header's position,
+    /// which identifies the container for that bookkeeping.
     func beginContainer(isMap: Bool) -> Int {
-        let position = state.pointee.buffer.reserveContainerHeader()
+        let position = state.pointee.buffer.offset
+        state.pointee.buffer.writeByte(isMap ? 0x80 : 0x90)
         state.pointee.openContainers.append(position)
-        headers.append(ContainerHeader(position: position, isMap: isMap))
         return position
     }
 
@@ -332,41 +344,6 @@ final class MessagePackEncoderImpl {
             ))
     }
 
-    /// Produces the final `Data`, compacting each reserved 5-byte container
-    /// header to the smallest format for its final count.
-    func finalize() -> Data {
-        var finalSize = state.pointee.buffer.offset
-        for header in headers {
-            let count = state.pointee.buffer.containerCount(at: header.position)
-            finalSize -= 5 - MessagePackScratchBuffer.containerHeaderSize(count: count)
-        }
-        let out = UnsafeMutableRawPointer.allocate(byteCount: max(finalSize, 1), alignment: 8)
-        var writer = MessagePackSerializer.Writer(base: out)
-        var source = 0
-        for header in headers {
-            let chunk = header.position - source
-            if chunk > 0 {
-                writer.writeBytes(state.pointee.buffer.base + source, count: chunk)
-            }
-            source = header.position + 5
-            let count = state.pointee.buffer.containerCount(at: header.position)
-            if header.isMap {
-                writer.writeMapHeader(count: count)
-            } else {
-                writer.writeArrayHeader(count: count)
-            }
-        }
-        let tail = state.pointee.buffer.offset - source
-        if tail > 0 {
-            writer.writeBytes(state.pointee.buffer.base + source, count: tail)
-        }
-        assert(writer.offset == finalSize)
-        return Data(
-            bytesNoCopy: out,
-            count: finalSize,
-            deallocator: .custom { pointer, _ in pointer.deallocate() }
-        )
-    }
 }
 
 // MARK: - Encoder
