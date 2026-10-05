@@ -11,18 +11,51 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
     var capacity: Int
     @usableFromInline
     var offset = 0
+    /// Whether `base` came from the heap rather than from the caller.
+    @usableFromInline
+    var isOnHeap = true
+
+    /// The size of the memory a buffer starts in.
+    @inlinable
+    static var initialCapacity: Int { 1024 }
 
     @usableFromInline
-    init(initialCapacity: Int = 1024) {
+    init(initialCapacity: Int = Self.initialCapacity) {
         // grow() doubles the capacity, so zero would never grow.
         precondition(initialCapacity > 0, "initialCapacity must be positive")
         self.base = .allocate(byteCount: initialCapacity, alignment: 8)
         self.capacity = initialCapacity
     }
 
+    /// A buffer that starts in memory its caller provides, from its own call
+    /// frame (`withUnsafeTemporaryAllocation`), and moves to the heap if it
+    /// outgrows it.
+    @usableFromInline
+    init(memory: UnsafeMutableRawBufferPointer) {
+        // grow() doubles the capacity, so zero would never grow.
+        precondition(memory.count > 0, "a buffer needs room for a byte")
+        self.base = memory.baseAddress.unsafelyUnwrapped
+        self.capacity = memory.count
+        self.isOnHeap = false
+    }
+
     @usableFromInline
     func deallocate() {
-        base.deallocate()
+        if isOnHeap {
+            base.deallocate()
+        }
+    }
+
+    /// The bytes as a `Data`. A buffer on the heap is handed over without
+    /// copying; a result still in the caller's memory is copied into a `Data`
+    /// of its exact size, which holds up to 14 bytes inline. The buffer must
+    /// not be used afterwards.
+    @usableFromInline
+    func finish() -> Data {
+        guard isOnHeap else {
+            return Data(bytes: base, count: offset)
+        }
+        return Data(bytesNoCopy: base, count: offset, deallocator: .custom { pointer, _ in pointer.deallocate() })
     }
 
     @inlinable
@@ -42,9 +75,10 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
         }
         let newBase = UnsafeMutableRawPointer.allocate(byteCount: newCapacity, alignment: 8)
         newBase.copyMemory(from: base, byteCount: offset)
-        base.deallocate()
+        deallocate()
         base = newBase
         capacity = newCapacity
+        isOnHeap = true
     }
 
     @inlinable
