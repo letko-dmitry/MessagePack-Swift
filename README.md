@@ -172,6 +172,20 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   spec deserializes the float formats to its Float type and the int formats
   to Integer. `Int128`/`UInt128` encode when the value fits in 64 bits and throw
   `EncodingError.invalidValue` otherwise.
+- Encoder output is byte-identical to `MessagePackSerializer.serialize` of
+  the equivalent value tree (smallest headers everywhere).
+- Both coders are `Sendable` (unchecked, value-semantic — like
+  `JSONEncoder`, values placed in `userInfo` must be `Sendable` for
+  cross-task use).
+- Codable edge cases behave like `JSONEncoder`/`JSONDecoder`: repeated
+  `container(keyedBy:)` requests merge into one map, a `superEncoder()`
+  that is never used contributes nothing (its entry is written lazily on
+  first use), `superDecoder()` for a missing key decodes as nil, and a
+  value that encodes nothing throws. Because encoding is streaming, writes
+  must be well nested — out-of-order writes to an already-closed container
+  trap with a precondition failure instead of corrupting output. Decoding
+  enforces a nesting-depth limit (128) against hostile input driving
+  recursive `Decodable` types.
 - `Decimal`, which MessagePack has no type for, goes through its own
   `Codable` conformance (a map of its fields) by default. As an option,
   `MessagePackEncoder(decimalEncodingStrategy: .convertToString)` writes a
