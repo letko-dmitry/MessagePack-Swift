@@ -214,10 +214,14 @@ Neither direction materializes a `MessagePackValue` tree:
   entries' byte offsets and key lengths as it scans, and matches coding keys
   with a length check and a `memcmp` against the wire bytes (no key
   `String` allocations), starting each lookup at the previous match so
-  keys requested in wire order cost O(1). `decodeIfPresent` looks a key up
-  once instead of the default three times (`contains`, `decodeNil`,
-  `decode`). Container scans are memoized so a decoded value is never
-  skipped twice.
+  keys requested in wire order cost two comparisons. `decodeIfPresent` looks
+  a key up once instead of the default three times (`contains`,
+  `decodeNil`, `decode`). The scan stops at array and map values until a
+  lookup needs to go past them, and a nested value's end is recorded when
+  it is decoded, so the nested values of a struct are walked once instead
+  of once more by every enclosing map. (A map read through `allKeys`, such
+  as a dictionary of structs, still skips over its values once to find all
+  of its keys.)
 - Values of natively represented types (integers, strings, floats, bools,
   `Date`/`Data`/timestamps) flowing through the generic
   `encode<T>`/`decode<T>` funnels are coded directly, bypassing the
