@@ -155,7 +155,7 @@ public struct MessagePackWriter: ~Copyable {
     /// Writes a timestamp as the spec's ext type -1.
     @inlinable
     public mutating func write(_ value: MessagePackTimestamp) {
-        buffer.writeExt(type: MessagePackTimestamp.extType, data: value.data)
+        buffer.writeTimestamp(value)
     }
 
     /// Writes a whole ``MessagePackValue`` tree.

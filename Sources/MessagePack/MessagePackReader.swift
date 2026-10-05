@@ -276,8 +276,11 @@ public struct MessagePackReader: ~Copyable {
     /// Reads a timestamp (ext type -1).
     @inlinable
     public mutating func readTimestamp() throws(MessagePackError) -> MessagePackTimestamp {
-        let (type, data) = try readExt()
-        guard let timestamp = MessagePackTimestamp(extType: type, data: data) else {
+        // The payload is read in place: a timestamp needs no `Data` of its own.
+        guard let ext = try parser.readRawExtBytes() else {
+            throw MessagePackError.typeMismatch(expected: "ext", format: try parser.peekFormat())
+        }
+        guard ext.type == MessagePackTimestamp.extType, let timestamp = MessagePackTimestamp(payload: ext.bytes) else {
             throw MessagePackError.invalidTimestamp
         }
         return timestamp

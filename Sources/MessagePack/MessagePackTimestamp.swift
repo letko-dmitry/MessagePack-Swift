@@ -30,22 +30,30 @@ public struct MessagePackTimestamp: Sendable, Equatable, Hashable {
     /// or 96 payload (including the spec's requirement that nanoseconds
     /// stay below 1,000,000,000).
     public init?(extType type: Int8, data: Data) {
-        guard type == Self.extType else { return nil }
-        let bytes = [UInt8](data)
+        guard type == Self.extType, let timestamp = data.withUnsafeBytes(Self.init(payload:)) else {
+            return nil
+        }
+        self = timestamp
+    }
+
+    /// Decodes a timestamp 32, 64, or 96 payload; nil for any other size and
+    /// for nanoseconds out of range.
+    @usableFromInline
+    init?(payload bytes: UnsafeRawBufferPointer) {
         switch bytes.count {
         case 4:  // timestamp 32: uint32 seconds
-            self.seconds = Int64(Self.load(UInt32.self, from: bytes, at: 0))
+            self.seconds = Int64(UInt32(bigEndian: bytes.loadUnaligned(as: UInt32.self)))
             self.nanoseconds = 0
         case 8:  // timestamp 64: nanoseconds in the upper 30 bits, seconds in the lower 34
-            let payload = Self.load(UInt64.self, from: bytes, at: 0)
+            let payload = UInt64(bigEndian: bytes.loadUnaligned(as: UInt64.self))
             let nanoseconds = UInt32(truncatingIfNeeded: payload >> 34)
             guard nanoseconds < 1_000_000_000 else { return nil }
             self.seconds = Int64(payload & 0x3_ffff_ffff)
             self.nanoseconds = nanoseconds
         case 12:  // timestamp 96: uint32 nanoseconds, then int64 seconds
-            let nanoseconds = Self.load(UInt32.self, from: bytes, at: 0)
+            let nanoseconds = UInt32(bigEndian: bytes.loadUnaligned(as: UInt32.self))
             guard nanoseconds < 1_000_000_000 else { return nil }
-            self.seconds = Int64(bitPattern: Self.load(UInt64.self, from: bytes, at: 4))
+            self.seconds = Int64(bigEndian: bytes.loadUnaligned(fromByteOffset: 4, as: Int64.self))
             self.nanoseconds = nanoseconds
         default:
             return nil
@@ -54,26 +62,41 @@ public struct MessagePackTimestamp: Sendable, Equatable, Hashable {
 
     /// The payload encoded with the smallest layout that fits the value.
     public var data: Data {
-        if seconds >= 0, seconds <= 0x3_ffff_ffff {
-            let payload = (UInt64(nanoseconds) << 34) | UInt64(seconds)
-            if payload & 0xffff_ffff_0000_0000 == 0 {
-                return Self.bigEndianData(UInt32(truncatingIfNeeded: payload))  // timestamp 32
-            }
-            return Self.bigEndianData(payload)  // timestamp 64
+        switch layout {
+        case .bits32(let payload):
+            return Self.bigEndianData(payload)
+        case .bits64(let payload):
+            return Self.bigEndianData(payload)
+        case .bits96(let nanoseconds, let seconds):
+            var data = Self.bigEndianData(nanoseconds)
+            data.append(Self.bigEndianData(seconds))
+            return data
         }
-        var data = Self.bigEndianData(nanoseconds)  // timestamp 96
-        data.append(Self.bigEndianData(UInt64(bitPattern: seconds)))
-        return data
     }
 
-    private static func load<T: FixedWidthInteger>(
-        _ type: T.Type, from bytes: [UInt8], at offset: Int
-    ) -> T {
-        var value = T.zero
-        for i in 0..<MemoryLayout<T>.size {
-            value = (value << 8) | T(bytes[offset + i])
+    /// The smallest of the spec's three payload layouts that holds a
+    /// timestamp, shared by ``data`` and the writers, which emit it directly.
+    @usableFromInline
+    enum Layout {
+        /// timestamp 32: seconds in 0..<2^32, no nanoseconds.
+        case bits32(UInt32)
+        /// timestamp 64: nanoseconds in the upper 30 bits, seconds in
+        /// 0..<2^34 in the lower 34.
+        case bits64(UInt64)
+        /// timestamp 96: nanoseconds, then signed seconds.
+        case bits96(nanoseconds: UInt32, seconds: Int64)
+    }
+
+    @inlinable
+    var layout: Layout {
+        if seconds >= 0, seconds <= 0x3_ffff_ffff {
+            let payload = UInt64(nanoseconds) << 34 | UInt64(seconds)
+            if payload <= 0xffff_ffff {
+                return .bits32(UInt32(truncatingIfNeeded: payload))
+            }
+            return .bits64(payload)
         }
-        return value
+        return .bits96(nanoseconds: nanoseconds, seconds: seconds)
     }
 
     private static func bigEndianData<T: FixedWidthInteger>(_ value: T) -> Data {

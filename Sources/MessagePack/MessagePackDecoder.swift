@@ -330,16 +330,17 @@ enum MessagePackDecoding {
     static func readTimestamp(
         _ parser: inout Parser
     ) throws(MessagePackDecodeFailure) -> MessagePackTimestamp {
-        let ext: (type: Int8, data: Data)?
+        // The payload is read in place: a timestamp needs no `Data` of its own.
+        let ext: (type: Int8, bytes: UnsafeRawBufferPointer)?
         do throws(MessagePackError) {
-            ext = try parser.readRawExt()
+            ext = try parser.readRawExtBytes()
         } catch {
             throw .corrupted(error)
         }
         guard let ext else { throw .wrongType }
-        guard let timestamp = MessagePackTimestamp(extType: ext.type, data: ext.data) else {
+        guard ext.type == MessagePackTimestamp.extType, let timestamp = MessagePackTimestamp(payload: ext.bytes) else {
             throw .invalid(
-                "Extension (type \(ext.type), \(ext.data.count) bytes) is not a valid MessagePack timestamp"
+                "Extension (type \(ext.type), \(ext.bytes.count) bytes) is not a valid MessagePack timestamp"
             )
         }
         return timestamp
