@@ -75,7 +75,7 @@ public struct MessagePackDecoder {
             let value = try MessagePackDecoding.unwrap(
                 type, parser: &parser, context: context, codingPath: [])
             guard parser.offset == raw.count else {
-                throw MessagePackDecoding.corrupted(.trailingBytes, [])
+                throw MessagePackDecoding.corrupted(.trailingBytes, [], offset: parser.offset)
             }
             return value
         }
@@ -175,27 +175,33 @@ enum MessagePackDecoding {
     /// rejected well before the stack runs out.
     static let maxDepth = 128
 
-    static func corrupted(_ error: MessagePackError, _ path: [CodingKey]) -> DecodingError {
+    static func corrupted(_ error: MessagePackError, _ path: [CodingKey], offset: Int) -> DecodingError {
         .dataCorrupted(
             DecodingError.Context(
                 codingPath: path,
-                debugDescription: "Invalid MessagePack data: \(error)",
+                debugDescription: "Invalid MessagePack data: \(error)\(at(offset))",
                 underlyingError: error
             ))
     }
 
+    /// The byte position in error messages, like `JSONDecoder`'s line and
+    /// column, so a failure can be found in the input.
+    private static func at(_ offset: Int) -> String {
+        " at byte offset \(offset)"
+    }
+
     /// A type-mismatch (or, for a nil wire value, value-not-found) error
-    /// describing the format byte actually present.
+    /// describing the format byte actually present at the parser's offset.
     static func wrongType(_ type: Any.Type, _ parser: Parser, _ path: [CodingKey]) -> DecodingError {
         guard let format = try? parser.peekFormat() else {
-            return corrupted(.insufficientData, path)
+            return corrupted(.insufficientData, path, offset: parser.offset)
         }
         if format == 0xc0 {
             return .valueNotFound(
                 type,
                 DecodingError.Context(
                     codingPath: path,
-                    debugDescription: "Cannot decode \(type) -- found nil value instead"
+                    debugDescription: "Cannot decode \(type) -- found nil value instead\(at(parser.offset))"
                 ))
         }
         return .typeMismatch(
@@ -203,13 +209,14 @@ enum MessagePackDecoding {
             DecodingError.Context(
                 codingPath: path,
                 debugDescription:
-                    "Expected \(type) but found MessagePack format byte 0x\(String(format, radix: 16))"
+                    "Expected \(type) but found MessagePack format byte 0x\(String(format, radix: 16))\(at(parser.offset))"
             ))
     }
 
-    /// Translates a primitive failure into a `DecodingError` with full
-    /// coding-path context. Only reached on failure, so building the path
-    /// here keeps the happy path allocation-free.
+    /// Translates a primitive failure, with the parser at the value's start,
+    /// into a `DecodingError` with full coding-path context. Only reached on
+    /// failure, so building the path here keeps the happy path
+    /// allocation-free.
     static func decodingError(
         _ failure: MessagePackDecodeFailure, type: Any.Type, parser: Parser, path: [CodingKey]
     ) -> DecodingError {
@@ -218,18 +225,19 @@ enum MessagePackDecoding {
             return wrongType(type, parser, path)
         case .invalid(let message):
             return .dataCorrupted(
-                DecodingError.Context(codingPath: path, debugDescription: message))
+                DecodingError.Context(codingPath: path, debugDescription: message + at(parser.offset)))
         case .corrupted(let error):
-            return corrupted(error, path)
+            return corrupted(error, path, offset: parser.offset)
         }
     }
 
     @inline(__always)
     static func skip(_ parser: inout Parser, path: @autoclosure () -> [CodingKey]) throws {
+        let startOffset = parser.offset
         do throws(MessagePackError) {
             try parser.skipValue()
         } catch {
-            throw corrupted(error, path())
+            throw corrupted(error, path(), offset: startOffset)
         }
     }
 
@@ -383,7 +391,7 @@ enum MessagePackDecoding {
         do throws(MessagePackError) {
             headerCount = try parser.readRawArrayHeader()
         } catch {
-            throw corrupted(error, codingPath())
+            throw corrupted(error, codingPath(), offset: startOffset)
         }
         guard let elementCount = headerCount else {
             parser.offset = startOffset
@@ -392,7 +400,7 @@ enum MessagePackDecoding {
         // Each element takes at least one byte; reject hostile counts before
         // reserving storage.
         guard elementCount <= parser.count - parser.offset else {
-            throw corrupted(.insufficientData, codingPath())
+            throw corrupted(.insufficientData, codingPath(), offset: startOffset)
         }
         var result: [E] = []
         result.reserveCapacity(Swift.min(elementCount, messagePackMaxPreallocation))
@@ -507,7 +515,7 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
     /// serializer's `maxDepth` protection).
     private func checkDepth() throws {
         guard codingPath.count < MessagePackDecoding.maxDepth else {
-            throw MessagePackDecoding.corrupted(.depthLimitExceeded, codingPath)
+            throw MessagePackDecoding.corrupted(.depthLimitExceeded, codingPath, offset: offset)
         }
     }
 
@@ -518,7 +526,7 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         do throws(MessagePackError) {
             entryCount = try parser.readRawMapHeader()
         } catch {
-            throw MessagePackDecoding.corrupted(error, codingPath)
+            throw MessagePackDecoding.corrupted(error, codingPath, offset: offset)
         }
         guard let entryCount else {
             throw MessagePackDecoding.wrongType([String: Any].self, parser, codingPath)
@@ -526,13 +534,13 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         // Each entry needs at least two bytes; reject hostile counts before
         // reserving storage.
         guard entryCount <= (parser.count - parser.offset) / 2 else {
-            throw MessagePackDecoding.corrupted(.insufficientData, codingPath)
+            throw MessagePackDecoding.corrupted(.insufficientData, codingPath, offset: offset)
         }
         let storage = context.borrowKeyedStorage()
         do throws(MessagePackError) {
             try storage.scan(entryCount: entryCount, parser: &parser)
         } catch {
-            throw MessagePackDecoding.corrupted(error, codingPath)
+            throw MessagePackDecoding.corrupted(error, codingPath, offset: offset)
         }
         // The scan just found this map's end; remember it so `unwrap` does
         // not have to skip the map again.
@@ -550,13 +558,13 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         do throws(MessagePackError) {
             elementCount = try parser.readRawArrayHeader()
         } catch {
-            throw MessagePackDecoding.corrupted(error, codingPath)
+            throw MessagePackDecoding.corrupted(error, codingPath, offset: offset)
         }
         guard let elementCount else {
             throw MessagePackDecoding.wrongType([Any].self, parser, codingPath)
         }
         guard elementCount <= parser.count - parser.offset else {
-            throw MessagePackDecoding.corrupted(.insufficientData, codingPath)
+            throw MessagePackDecoding.corrupted(.insufficientData, codingPath, offset: offset)
         }
         return MessagePackUnkeyedDecodingContainer(
             context: context, codingPath: codingPath, elementCount: elementCount,
@@ -582,6 +590,7 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         do throws(MessagePackDecodeFailure) {
             return try read(&parser)
         } catch {
+            parser.offset = offset
             throw MessagePackDecoding.decodingError(
                 error, type: type, parser: parser, path: codingPath)
         }
