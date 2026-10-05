@@ -71,19 +71,15 @@ public struct MessagePackEncoder {
     /// encodes nothing, since MessagePack has no representation for "no
     /// value".
     public func encode<T: Encodable>(_ value: T) throws -> Data {
-        // The output starts in this frame's memory, so a small message is
-        // encoded without allocating a buffer for it.
-        try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) { memory in
-            let impl = MessagePackEncoderImpl(
-                memory: memory, userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy)
-            defer { impl.tearDown() }
+        try MessagePackEncoderState.with(userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy) { state in
+            let impl = MessagePackEncoderImpl(state: state)
             do {
                 try impl.encodeEncodable(value, codingPath: [])
             } catch {
-                impl.state.pointee.buffer.deallocate()
+                state.pointee.buffer.deallocate()
                 throw error
             }
-            return impl.state.pointee.buffer.finish()
+            return state.pointee.buffer.finish()
         }
     }
 }
@@ -92,17 +88,21 @@ extension MessagePackEncoder: @unchecked Sendable {}
 
 // MARK: - Mutable encoder state
 
-/// All per-encode mutable state, kept behind an `UnsafeMutablePointer` so
-/// the per-element hot path bypasses dynamic exclusivity enforcement on
-/// class properties.
+/// All per-encode state, in the frame of ``MessagePackEncoder/encode(_:)``
+/// behind an `UnsafeMutablePointer`: copying the pointer into every encoder
+/// and container costs no reference counting, and the per-element hot path
+/// bypasses dynamic exclusivity enforcement.
 struct MessagePackEncoderState {
+    let userInfo: [CodingUserInfoKey: Any]
+    let decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy
+
     var buffer: MessagePackScratchBuffer
 
     /// Stack of header positions of containers that are still open for
     /// writing. A write to a container pops any nested containers above it
     /// (they are implicitly closed); a write to a container that is no
     /// longer on the stack is an out-of-order write and traps.
-    var openContainers: [Int] = []
+    var openContainers: MessagePackStack<Int>
 
     /// Per-`_MessagePackEncoder` record of the container it created, so
     /// repeated `container(keyedBy:)` / `unkeyedContainer()` calls on the
@@ -146,6 +146,31 @@ struct MessagePackEncoderState {
         return beginEntrySlow(at: position)
     }
 
+    /// Runs `body` with the state of one `encode` call. The state lives in
+    /// this frame, as the encoder (and every container it serves) is only
+    /// valid during the call, and so does the memory of its buffer and
+    /// container stack until they outgrow it: a typical message is encoded
+    /// without allocating either.
+    static func with<R>(
+        userInfo: [CodingUserInfoKey: Any],
+        decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy,
+        _ body: (UnsafeMutablePointer<MessagePackEncoderState>) throws -> R
+    ) rethrows -> R {
+        try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) { output in
+            try withUnsafeTemporaryAllocation(of: Int.self, capacity: 32) { openContainers in
+                var state = MessagePackEncoderState(
+                    userInfo: userInfo,
+                    decimalEncodingStrategy: decimalEncodingStrategy,
+                    buffer: MessagePackScratchBuffer(memory: output),
+                    openContainers: MessagePackStack(memory: openContainers)
+                )
+                defer { state.openContainers.deallocate() }
+
+                return try withUnsafeMutablePointer(to: &state, body)
+            }
+        }
+    }
+
     @inline(never)
     private mutating func beginEntrySlow(at position: Int) -> Bool {
         while let top = openContainers.last, top != position {
@@ -159,31 +184,16 @@ struct MessagePackEncoderState {
 
 // MARK: - Shared encoder state
 
-final class MessagePackEncoderImpl {
-    /// The mutable encoding state. Owned by this instance; released by
-    /// `tearDown()`.
+/// The encoding machinery shared by every encoder and container of one
+/// `encode` call: a single pointer to the state, so copying it into each of
+/// them costs no reference counting, and creating it no allocation.
+struct MessagePackEncoderImpl {
+    /// The mutable encoding state, in the frame of
+    /// ``MessagePackEncoder/encode(_:)``.
     let state: UnsafeMutablePointer<MessagePackEncoderState>
-    let userInfo: [CodingUserInfoKey: Any]
-    let decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy
 
-    /// Writes into a buffer that starts in `memory`.
-    init(
-        memory: UnsafeMutableRawBufferPointer, userInfo: [CodingUserInfoKey: Any],
-        decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy
-    ) {
-        self.state = .allocate(capacity: 1)
-        self.state.initialize(to: MessagePackEncoderState(buffer: MessagePackScratchBuffer(memory: memory)))
-        self.userInfo = userInfo
-        self.decimalEncodingStrategy = decimalEncodingStrategy
-    }
-
-    /// Releases the encoding state, but not the buffer, which the caller
-    /// either hands to the result or releases. Must be called exactly once,
-    /// after encoding finishes (successfully or not).
-    func tearDown() {
-        state.deinitialize(count: 1)
-        state.deallocate()
-    }
+    var userInfo: [CodingUserInfoKey: Any] { state.pointee.userInfo }
+    var decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy { state.pointee.decimalEncodingStrategy }
 
     /// Opens a container: writes its header as a fixmap or fixarray, which
     /// counts (and widens) in place, and returns the header's position,

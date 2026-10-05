@@ -209,9 +209,9 @@ Neither direction materializes a `MessagePackValue` tree:
 - **Encoding** streams bytes straight into the output in a single pass.
   A container's header (its count unknown up front) is written as a fixmap
   or fixarray and keeps the running count itself, widening in place to the
-  16- or 32-bit format if the container outgrows it. The output buffer
-  starts in the `encode` call's own stack frame, so a typical message is
-  encoded without allocating it.
+  16- or 32-bit format if the container outgrows it. The output buffer and
+  the stack of open containers start in the `encode` call's own stack
+  frame, so a typical message is encoded without allocating either.
 - **Decoding** walks the raw bytes directly. A keyed container records its
   entries' byte offsets and key lengths as it scans, and matches coding keys
   with a length check and a `memcmp` against the wire bytes (no key
