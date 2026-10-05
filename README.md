@@ -122,8 +122,9 @@ let deserialized: Foo = try MessagePackSerializer.deserialize(Foo.self, from: se
   escaping a conformance would be unsound, and the compiler now rejects it.
   When reading containers manually, balance each header read with
   `endContainer()`.
-- `serialize` is non-throwing (single pass into a growable buffer, handed
-  to `Data` without copying); unrepresentable values (strings/containers
+- `serialize` is non-throwing (single pass into a buffer that starts on
+  the stack: a small result is copied into an exactly sized `Data`, a
+  larger one is handed over without copying); unrepresentable values (strings/containers
   over MessagePack's 2^32-1 limits, dates outside the timestamp range) stop
   with a precondition failure, unlike the throwing `serialize(value:)` /
   `MessagePackEncoder` routes. `deserialize` uses typed throws
@@ -240,7 +241,7 @@ p50 wall clock, same fixtures as the macro table:
 - **Spec compliance**: All format families are supported (fixint, fixmap, fixarray, fixstr, nil, bool, bin 8/16/32, ext 8/16/32, float 32/64, uint/int 8–64, fixext 1–16, str 8/16/32, array 16/32, map 16/32). The reserved byte `0xc1` and invalid UTF-8 in strings are rejected; as the spec asks, the original bytes of such a string stay readable through `MessagePackReader.readStringBytes()`. Timestamps round-trip through `.ext(type: -1, ...)`.
 - **Smallest representation**: As recommended by the spec, integers serialize with the smallest format that represents the value, regardless of the case width (`.int64(5)` encodes as a 1-byte positive fixint), and a double that a float 32 holds exactly, bit for bit (`1.5`, `-0.0`, the infinities, the default NaN), as a 5-byte float 32 rather than a 9-byte float 64 on every route. Consequently, deserialization maps each wire format to the narrowest matching case (positive fixint → `.uint8`, negative fixint → `.int8`, `uint 16` → `.uint16`, float 32 → `.float32`, …); use the `int64Value` / `uint64Value` / `doubleValue` accessors for width-agnostic reads.
 - **Iterative, not recursive**: Both directions use explicit frame stacks, so deeply nested input can never overflow the call stack. Deserialization enforces a nesting-depth limit (512) as DoS protection; serialization has no depth limit. The innermost container's state is kept in locals on both paths, so flat data never touches the stack arrays.
-- **Single-pass serialization**: One streaming pass into a growable buffer (doubling growth, so a large string/binary payload triggers at most one resize before its bulk copy), handed to `Data` without copying. Length limits (strings/binary/containers beyond 2^32-1) are still validated inline with typed throws.
+- **Single-pass serialization**: One streaming pass into a growable buffer that starts on the stack (doubling growth, so a large string/binary payload triggers at most one resize before its bulk copy); a result that outgrew the stack is handed to `Data` without copying, a smaller one is copied into an exactly sized `Data`. Length limits (strings/binary/containers beyond 2^32-1) are still validated inline with typed throws.
 - **Zero-copy parsing**: The parser walks the raw bytes with unaligned big-endian loads; strings are built via `UTF8Span` (validate once, no revalidation) on OS 26+, falling back to `String(validating:)`. The availability check is resolved once per process, not per string.
 - **Hostile input**: Length claims are checked against remaining input before allocating, so truncated or malicious headers (e.g. "4 GB string follows") fail fast without large allocations.
 
@@ -272,7 +273,7 @@ p50 wall clock:
 | nested objects (500) | 325 µs | 336 µs |
 | binary 1 MB | 27 µs | 21 µs |
 
-Deserialization of a flat scalar array performs 1 allocation (the result array); serialization performs the output buffer's growth chain plus the `Data` wrapper (about 9 allocations for a 10k-int array, independent of element count beyond the doubling).
+Deserialization of a flat scalar array performs 1 allocation (the result array); serialization performs the output buffer's growth chain beyond its first kilobyte on the stack, plus the `Data` wrapper (about 8 allocations for a 10k-int array, independent of element count beyond the doubling; none but the `Data` for a small message).
 
 ## Testing
 

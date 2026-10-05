@@ -14,18 +14,17 @@ public struct MessagePackSerializer {
     /// the unsigned formats (positive fixint / uint 8-64); negative integers
     /// use the signed formats (negative fixint / int 8-64).
     public static func serialize(value: MessagePackValue) throws(MessagePackError) -> Data {
-        var buffer = MessagePackScratchBuffer(initialCapacity: 1024)
-        do throws(MessagePackError) {
-            try buffer.writeValidated(value)
-        } catch {
-            buffer.deallocate()
-            throw error
+        try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) {
+            (memory) throws(MessagePackError) -> Data in
+            var buffer = MessagePackScratchBuffer(memory: memory)
+            do throws(MessagePackError) {
+                try buffer.writeValidated(value)
+            } catch {
+                buffer.deallocate()
+                throw error
+            }
+            return buffer.finish()
         }
-        return Data(
-            bytesNoCopy: buffer.base,
-            count: buffer.offset,
-            deallocator: .custom { pointer, _ in pointer.deallocate() }
-        )
     }
 
     /// Deserializes MessagePack binary data into a value.
