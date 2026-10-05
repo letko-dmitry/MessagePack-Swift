@@ -12,14 +12,14 @@ extension MessagePackDecoding {
     static func decodeDecimal(
         parser: inout Parser,
         context: MessagePackDecodingContext,
-        codingPath: () -> [CodingKey]
+        path: () -> MessagePackCodingPath
     ) throws -> Decimal {
         let strategy = context.state.pointee.decimalDecodingStrategy
         if strategy.contains(.deferredToDecimal), let format = try? parser.peekFormat(), isMapFormat(format) {
-            return try decodeWithContainers(Decimal.self, parser: &parser, context: context, codingPath: codingPath())
+            return try decodeWithContainers(Decimal.self, parser: &parser, context: context, path: path())
         }
 
-        return try readScalarOrRewind(Decimal.self, &parser, parser.offset, codingPath) {
+        return try readScalarOrRewind(Decimal.self, &parser, parser.offset, path) {
             (parser: inout Parser) throws(MessagePackDecodeFailure) -> Decimal in
             try readDecimal(&parser, strategy: strategy)
         }

@@ -231,11 +231,12 @@ Neither direction materializes a `MessagePackValue` tree:
   out-of-line lookup of cached type identifiers, so every other value pays
   a single call for it.
 - Hot paths avoid allocation: index coding keys build their `stringValue`
-  lazily, coding paths are only materialized for errors and nested
-  containers, decode primitives report failures via typed throws and attach
-  coding-path context only when an error actually propagates, and both
-  coders keep their mutable state behind a pointer, bypassing dynamic
-  exclusivity checks.
+  lazily; the decoder's coding paths are a linked list (like
+  `JSONDecoder`'s), extended in constant time per level and turned into
+  `[CodingKey]` only for errors and `codingPath` reads; decode primitives
+  report failures via typed throws and attach coding-path context only when
+  an error actually propagates, and both coders keep their mutable state
+  behind a pointer, bypassing dynamic exclusivity checks.
 
 p50 wall clock, same fixtures as the macro table:
 
