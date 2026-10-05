@@ -448,6 +448,9 @@ enum MessagePackDecoding {
         if T.self == MessagePackTimestamp.self {
             return try readScalarOrRewind(MessagePackTimestamp.self, &parser, startOffset, path, readTimestamp) as! T
         }
+        if let collectionType = MessagePackCollectionType(ObjectIdentifier(T.self)) {
+            return try decodeCollection(collectionType, type, parser: &parser, context: context, path: path)
+        }
 
         return try decodeWithContainers(type, parser: &parser, context: context, path: path())
     }
