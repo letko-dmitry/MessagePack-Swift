@@ -198,6 +198,9 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   trap with a precondition failure instead of corrupting output. Decoding
   enforces a nesting-depth limit (128) against hostile input driving
   recursive `Decodable` types.
+- The `Decoder` and containers handed to `init(from:)` are valid only
+  during that `decode` call (they refer to state on its stack);
+  conformances must not store them.
 
 ### Codable performance
 
@@ -228,9 +231,9 @@ Neither direction materializes a `MessagePackValue` tree:
 - Hot paths avoid allocation: index coding keys build their `stringValue`
   lazily, coding paths are only materialized for errors and nested
   containers, decode primitives report failures via typed throws and attach
-  coding-path context only when an error actually propagates, and the
-  encoder's buffer sits behind a pointer to bypass dynamic exclusivity
-  checks.
+  coding-path context only when an error actually propagates, and both
+  coders keep their mutable state behind a pointer, bypassing dynamic
+  exclusivity checks.
 
 p50 wall clock, same fixtures as the macro table:
 
