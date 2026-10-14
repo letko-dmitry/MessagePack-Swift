@@ -13,7 +13,7 @@ import Foundation
 /// not a substitute: it drops a leading BOM.
 @usableFromInline
 let messagePackMakeString: @Sendable (UnsafeBufferPointer<UInt8>) -> String? = {
-    if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
+    if #available(anyAppleOS 26, *) {
         return { bytes in
             guard let span = try? UTF8Span(validating: bytes.span) else { return nil }
             return String(copying: span)
