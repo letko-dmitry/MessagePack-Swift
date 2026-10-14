@@ -29,7 +29,9 @@ public struct MessagePackTimestamp: Sendable, Equatable, Hashable {
     /// Fails unless `type` is -1 and `data` is a valid timestamp 32, 64,
     /// or 96 payload (including the spec's requirement that nanoseconds
     /// stay below 1,000,000,000).
-    public init?(extType type: Int8, data: Data) {
+    public init?(extType type: Int8, data: borrowing Data) {
+        // `borrowing`: an initializer consumes its parameters by default, and
+        // `data` is only read.
         guard type == Self.extType, let timestamp = data.withUnsafeBytes(Self.init(payload:)) else {
             return nil
         }
