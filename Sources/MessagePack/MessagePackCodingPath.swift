@@ -30,12 +30,18 @@ indirect enum MessagePackCodingPath {
         return keys
     }
 
-    func appending(_ key: consuming CodingKey) -> MessagePackCodingPath {
+    /// Borrows `key` (the default) rather than consuming it: the keyed
+    /// containers pass their generic `Key`, which they borrow themselves.
+    /// Handing over an owned `Key` copied it into a stack temporary sized at
+    /// run time, in the prologue of every `decode(_:forKey:)`.
+    func appending(_ key: CodingKey) -> MessagePackCodingPath {
         // Depth is bounded by the decoders' nesting limit and by the stack.
         .node(parent: self, key: key, depth: depth &+ 1)
     }
 
     func appending(index: Int) -> MessagePackCodingPath {
-        appending(MessagePackCodingKey(index: index))
+        // Built here so the new key moves into the node rather than being
+        // copied from a borrow.
+        .node(parent: self, key: MessagePackCodingKey(index: index), depth: depth &+ 1)
     }
 }
