@@ -501,15 +501,15 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     func nestedContainer<NestedKey: CodingKey>(
         keyedBy type: NestedKey.Type, forKey key: Key
     ) throws -> KeyedDecodingContainer<NestedKey> {
-        let impl = MessagePackDecoderImpl(
+        let decoder = MessagePackDirectDecoder(
             context: context, offset: try valueOffset(key), path: path.appending(key))
-        return try impl.container(keyedBy: NestedKey.self)
+        return try decoder.container(keyedBy: NestedKey.self)
     }
 
     func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
-        let impl = MessagePackDecoderImpl(
+        let decoder = MessagePackDirectDecoder(
             context: context, offset: try valueOffset(key), path: path.appending(key))
-        return try impl.unkeyedContainer()
+        return try decoder.unkeyedContainer()
     }
 
     /// Mirroring `JSONDecoder`, a missing entry yields a decoder positioned
@@ -519,7 +519,7 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
             return MessagePackNilDecoder(
                 codingPath: path.appending(key).keys, userInfo: context.userInfo)
         }
-        return MessagePackDecoderImpl(
+        return MessagePackDirectDecoder(
             context: context, offset: storage.entry(at: index).valueOffset, path: path.appending(key))
     }
 
@@ -746,8 +746,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     ) throws -> KeyedDecodingContainer<NestedKey> {
         try checkEnd(KeyedDecodingContainer<NestedKey>.self)
         let elementPath = path.appending(index: currentIndex)
-        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, path: elementPath)
-        let container = try impl.container(keyedBy: NestedKey.self)
+        let decoder = MessagePackDirectDecoder(context: context, offset: parser.offset, path: elementPath)
+        let container = try decoder.container(keyedBy: NestedKey.self)
         try MessagePackDecoding.skip(&parser, path: elementPath)
         advanceIndex()
         return container
@@ -756,8 +756,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
         try checkEnd(UnkeyedDecodingContainer.self)
         let elementPath = path.appending(index: currentIndex)
-        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, path: elementPath)
-        let container = try impl.unkeyedContainer()
+        let decoder = MessagePackDirectDecoder(context: context, offset: parser.offset, path: elementPath)
+        let container = try decoder.unkeyedContainer()
         try MessagePackDecoding.skip(&parser, path: elementPath)
         advanceIndex()
         return container
@@ -766,9 +766,9 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     mutating func superDecoder() throws -> Decoder {
         try checkEnd(Decoder.self)
         let elementPath = path.appending(index: currentIndex)
-        let impl = MessagePackDecoderImpl(context: context, offset: parser.offset, path: elementPath)
+        let decoder = MessagePackDirectDecoder(context: context, offset: parser.offset, path: elementPath)
         try MessagePackDecoding.skip(&parser, path: elementPath)
         advanceIndex()
-        return impl
+        return decoder
     }
 }

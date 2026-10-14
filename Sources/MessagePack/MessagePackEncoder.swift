@@ -71,10 +71,10 @@ public struct MessagePackEncoder {
     /// encodes nothing, since MessagePack has no representation for "no
     /// value".
     public func encode<T: Encodable>(_ value: T) throws -> Data {
-        try MessagePackEncoderState.with(userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy) { state in
-            let impl = MessagePackEncoderImpl(state: state)
+        try MessagePackEncodingState.with(userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy) { state in
+            let context = MessagePackEncodingContext(state: state)
             do {
-                try impl.encodeValue(value, path: .root)
+                try context.encodeValue(value, path: .root)
             } catch {
                 state.pointee.buffer.deallocate()
                 throw error
@@ -92,7 +92,7 @@ extension MessagePackEncoder: @unchecked Sendable {}
 /// behind an `UnsafeMutablePointer`: copying the pointer into every encoder
 /// and container costs no reference counting, and the per-element hot path
 /// bypasses dynamic exclusivity enforcement.
-struct MessagePackEncoderState {
+struct MessagePackEncodingState {
     let userInfo: [CodingUserInfoKey: Any]
     let decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy
 
@@ -127,12 +127,12 @@ struct MessagePackEncoderState {
     static func with<R>(
         userInfo: [CodingUserInfoKey: Any],
         decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy,
-        _ body: (UnsafeMutablePointer<MessagePackEncoderState>) throws -> R
+        _ body: (UnsafeMutablePointer<MessagePackEncodingState>) throws -> R
     ) rethrows -> R {
         try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) { output in
             try withUnsafeTemporaryAllocation(of: Int.self, capacity: 32) { openContainers in
                 try withUnsafeTemporaryAllocation(of: MessagePackEncodingPath.Node.self, capacity: 16) { pathNodes in
-                    var state = MessagePackEncoderState(
+                    var state = MessagePackEncodingState(
                         userInfo: userInfo,
                         decimalEncodingStrategy: decimalEncodingStrategy,
                         buffer: MessagePackScratchBuffer(memory: output),
@@ -164,7 +164,7 @@ struct MessagePackEncoderState {
 // MARK: - Coding paths
 
 /// A coding path of the encoder: the index of its last key in
-/// ``MessagePackEncoderState/pathNodes``, each node linking to its parent.
+/// ``MessagePackEncodingState/pathNodes``, each node linking to its parent.
 ///
 /// A nested value's node is pushed when the value gets an encoder of its own
 /// and popped once the value is encoded, along with the nodes of its nested
@@ -184,15 +184,15 @@ struct MessagePackEncodingPath {
     let node: Int
 }
 
-// MARK: - Shared encoder state
+// MARK: - Encoding context
 
 /// The encoding machinery shared by every encoder and container of one
 /// `encode` call: a single pointer to the state, so copying it into each of
 /// them costs no reference counting, and creating it no allocation.
-struct MessagePackEncoderImpl {
+struct MessagePackEncodingContext {
     /// The mutable encoding state, in the frame of
     /// ``MessagePackEncoder/encode(_:)``.
-    let state: UnsafeMutablePointer<MessagePackEncoderState>
+    let state: UnsafeMutablePointer<MessagePackEncodingState>
 
     var userInfo: [CodingUserInfoKey: Any] { state.pointee.userInfo }
     var decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy { state.pointee.decimalEncodingStrategy }
@@ -349,7 +349,7 @@ struct MessagePackEncoderImpl {
     /// Encodes a value through its `Encodable` conformance.
     func encodeWithContainers<T: Encodable>(_ value: T, path: MessagePackEncodingPath) throws {
         let start = state.pointee.buffer.offset
-        try value.encode(to: _MessagePackEncoder(impl: self, path: path, start: start))
+        try value.encode(to: MessagePackDirectEncoder(context: self, path: path, start: start))
 
         // MessagePack has no representation for "no value at all";
         // JSONEncoder throws in the same situation.
@@ -419,11 +419,12 @@ struct MessagePackEncoderImpl {
 
 // MARK: - Encoder
 
-/// The `Encoder` handed to `Encodable.encode(to:)`. A three-word struct
-/// (shared state, coding path, start), so passing it as an existential does
-/// not allocate.
-struct _MessagePackEncoder: Encoder {
-    let impl: MessagePackEncoderImpl
+/// The `Encoder` handed to `Encodable.encode(to:)`. Direct, unlike
+/// ``MessagePackDeferredEncoder``: its value's entry is already written, and
+/// the value goes straight into the output. A three-word struct (context,
+/// coding path, start), so passing it as an existential does not allocate.
+struct MessagePackDirectEncoder: Encoder {
+    let context: MessagePackEncodingContext
     let path: MessagePackEncodingPath
     /// Where the value of this encoder starts in the output. A value is one
     /// single value or one container whose header is written at `start`, so
@@ -431,24 +432,24 @@ struct _MessagePackEncoder: Encoder {
     /// per-encoder record is needed.
     let start: Int
 
-    var codingPath: [CodingKey] { impl.codingPath(path) }
+    var codingPath: [CodingKey] { context.codingPath(path) }
 
-    var userInfo: [CodingUserInfoKey: Any] { impl.userInfo }
+    var userInfo: [CodingUserInfoKey: Any] { context.userInfo }
 
     /// The header position of this value's container: opened at `start` on
     /// the first request, and the same one on later requests.
     private func containerPosition(isMap: Bool) -> Int {
-        if impl.state.pointee.buffer.offset == start {
-            return impl.beginContainer(isMap: isMap)
+        if context.state.pointee.buffer.offset == start {
+            return context.beginContainer(isMap: isMap)
         }
-        impl.checkReusedContainer(at: start, isMap: isMap)
+        context.checkReusedContainer(at: start, isMap: isMap)
         return start
     }
 
     func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
         KeyedEncodingContainer(
             MessagePackKeyedEncodingContainer(
-                impl: impl,
+                context: context,
                 headerPosition: containerPosition(isMap: true),
                 path: path
             )
@@ -457,14 +458,14 @@ struct _MessagePackEncoder: Encoder {
 
     func unkeyedContainer() -> UnkeyedEncodingContainer {
         MessagePackUnkeyedEncodingContainer(
-            impl: impl,
+            context: context,
             headerPosition: containerPosition(isMap: false),
             path: path
         )
     }
 
     func singleValueContainer() -> SingleValueEncodingContainer {
-        MessagePackSingleValueEncodingContainer(impl: impl, path: path, start: start)
+        MessagePackSingleValueEncodingContainer(context: context, path: path, start: start)
     }
 }
 

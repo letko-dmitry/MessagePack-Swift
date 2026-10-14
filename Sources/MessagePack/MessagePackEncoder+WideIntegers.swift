@@ -1,6 +1,6 @@
 // MARK: - 128-bit integers
 
-extension MessagePackEncoderImpl {
+extension MessagePackEncodingContext {
     /// Writes a 128-bit integer as the 64-bit MessagePack integer holding
     /// it, calling `begin` (which opens the container entry) only once the
     /// value is known to fit, so a throw leaves no partial entry behind.

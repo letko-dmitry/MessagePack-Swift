@@ -530,7 +530,7 @@ enum MessagePackDecoding {
         path: MessagePackCodingPath
     ) throws -> T {
         let startOffset = parser.offset
-        let impl = MessagePackDecoderImpl(context: context, offset: startOffset, path: path)
+        let decoder = MessagePackDirectDecoder(context: context, offset: startOffset, path: path)
 
         let state = context.state
         let outerOffset = state.pointee.decodingOffset
@@ -542,7 +542,7 @@ enum MessagePackDecoding {
             state.pointee.decodingStorage = outerStorage
         }
 
-        let value = try type.init(from: impl)
+        let value = try type.init(from: decoder)
 
         if let storage = state.pointee.decodingStorage {
             do throws(MessagePackError) {
@@ -562,10 +562,11 @@ enum MessagePackDecoding {
 
 // MARK: - Decoder
 
-/// The `Decoder` handed to `Decodable.init(from:)`. A three-word struct so
-/// passing it as an existential does not allocate. Also serves as its own
-/// single-value container.
-struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
+/// The `Decoder` handed to `Decodable.init(from:)`. Direct, unlike
+/// ``MessagePackNilDecoder``: it reads a value present in the input, in place.
+/// A three-word struct so passing it as an existential does not allocate.
+/// Also serves as its own single-value container.
+struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
     let context: MessagePackDecodingContext
     /// The byte offset of the value this decoder decodes.
     let offset: Int

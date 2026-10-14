@@ -1,6 +1,6 @@
 // MARK: - Collection fast paths
 
-extension MessagePackEncoderImpl {
+extension MessagePackEncodingContext {
     /// Writes the value at `raw`, of a fast-path collection type.
     func encodeCollection(_ collectionType: MessagePackCollectionType, _ raw: UnsafeRawPointer) {
         switch collectionType {
