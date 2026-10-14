@@ -30,7 +30,9 @@ struct MessagePackStack<Element> {
         return base[index]
     }
 
-    mutating func append(_ element: Element) {
+    /// Consumes `element`, which moves into the stack's memory; borrowed, it
+    /// would be copied there and the caller's temporary destroyed.
+    mutating func append(_ element: consuming Element) {
         if count == capacity {
             grow()
         }
