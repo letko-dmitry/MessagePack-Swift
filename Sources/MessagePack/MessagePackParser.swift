@@ -283,7 +283,10 @@ extension MessagePackSerializer {
                             minimumCapacity: items.count / 2)
                         var i = 0
                         while i < items.count {
-                            entries[items[i]] = items[i + 1]
+                            // Not `entries[…] = …`, whose optional setter
+                            // carries the removal path; the last of
+                            // duplicate keys wins either way.
+                            entries.updateValue(items[i + 1], forKey: items[i])
                             i += 2
                         }
                         value = .map(entries)

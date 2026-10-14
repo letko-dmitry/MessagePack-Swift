@@ -381,7 +381,9 @@ where Key: MessagePackSerializable, Value: MessagePackSerializable {
         self.init(minimumCapacity: Swift.min(count, messagePackMaxPreallocation))
         for _ in 0..<count {
             let key = try Key(messagePack: &reader)
-            self[key] = try Value(messagePack: &reader)
+            // Not `self[key] = …`: the optional subscript setter also pulls
+            // the removal path into every specialization.
+            updateValue(try Value(messagePack: &reader), forKey: key)
         }
         reader.endContainer()
     }
