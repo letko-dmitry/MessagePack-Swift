@@ -56,7 +56,7 @@ public struct MessagePackEncoder {
 
     /// Contextual information made available to the `Encodable` types via
     /// `Encoder.userInfo`.
-    public var userInfo: [CodingUserInfoKey: Any] = [:]
+    public var userInfo = [CodingUserInfoKey: Any]()
 
     /// How `Decimal` values are written.
     public var decimalEncodingStrategy: DecimalEncodingStrategy

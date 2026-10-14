@@ -289,7 +289,9 @@ struct MessagePackValueFrame {
 
     init(items: [MessagePackValue]) {
         self.items = items
-        self.map = [:]
+        // Not `[:]`, which calls `Dictionary(dictionaryLiteral:)` for every
+        // array written.
+        self.map = [MessagePackValue: MessagePackValue]()
         self.mapIndex = self.map.startIndex
         self.pending = nil
         self.isMap = false

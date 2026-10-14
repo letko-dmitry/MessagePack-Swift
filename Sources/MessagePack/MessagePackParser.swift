@@ -248,7 +248,7 @@ extension MessagePackSerializer {
                     default: entryCount = Int(format & 0x0f)
                     }
                     if entryCount == 0 {
-                        value = .map([:])
+                        value = .map([MessagePackValue: MessagePackValue]())
                     } else {
                         guard depth < MessagePackSerializer.maxDepth else {
                             try MessagePackError.throw(.depthLimitExceeded)

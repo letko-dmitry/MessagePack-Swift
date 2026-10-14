@@ -57,7 +57,7 @@ public struct MessagePackDecoder {
 
     /// Contextual information made available to the `Decodable` types via
     /// `Decoder.userInfo`.
-    public var userInfo: [CodingUserInfoKey: Any] = [:]
+    public var userInfo = [CodingUserInfoKey: Any]()
 
     /// How `Decimal` values are read; a value in a format the strategy does
     /// not accept is a type mismatch.
