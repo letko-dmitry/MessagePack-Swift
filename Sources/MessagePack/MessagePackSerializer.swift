@@ -21,7 +21,7 @@ public struct MessagePackSerializer {
                 try buffer.writeValidated(value)
             } catch {
                 buffer.deallocate()
-                throw error
+                try MessagePackError.throw(error)
             }
             return buffer.finish()
         }
@@ -37,13 +37,20 @@ public struct MessagePackSerializer {
             do throws(MessagePackError) {
                 let value = try parser.parseValue()
                 guard parser.offset == buffer.count else {
-                    throw MessagePackError.trailingBytes
+                    try MessagePackError.throw(.trailingBytes)
                 }
                 return .success(value)
             } catch {
                 return .failure(error)
             }
         }
-        return try result.get()
+        // Not `result.get()`, which throws in place (see
+        // `MessagePackError.throw`).
+        switch result {
+        case .success(let value):
+            return value
+        case .failure(let error):
+            try MessagePackError.throw(error)
+        }
     }
 }

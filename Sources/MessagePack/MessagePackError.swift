@@ -31,3 +31,15 @@ public enum MessagePackError: Error, Sendable, Equatable {
     /// An extension value has the timestamp type (-1) but an invalid payload.
     case invalidTimestamp
 }
+
+extension MessagePackError {
+    /// Throws `error`. A typed `throw` costs about 80 bytes where it is
+    /// written (a runtime availability check and a `swift_willThrowTypedImpl`
+    /// call), and the parser's reads are inlined into every decode path,
+    /// clients' too through the inlinable reader, so they throw through here.
+    @usableFromInline
+    @inline(never)
+    static func `throw`(_ error: consuming MessagePackError) throws(MessagePackError) -> Never {
+        throw error
+    }
+}

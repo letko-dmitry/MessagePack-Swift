@@ -104,14 +104,21 @@ extension MessagePackSerializer {
             do throws(MessagePackError) {
                 let value = try T(messagePack: &reader)
                 guard reader.isAtEnd else {
-                    throw MessagePackError.trailingBytes
+                    try MessagePackError.throw(.trailingBytes)
                 }
                 return .success(value)
             } catch {
                 return .failure(error)
             }
         }
-        return try result.get()
+        // Not `result.get()`, which throws in place (see
+        // `MessagePackError.throw`).
+        switch result {
+        case .success(let value):
+            return value
+        case .failure(let error):
+            try MessagePackError.throw(error)
+        }
     }
 }
 
@@ -130,7 +137,7 @@ extension MessagePackSerializable where Self: RawRepresentable, RawValue: Messag
     public init(messagePack reader: inout MessagePackReader) throws(MessagePackError) {
         let rawValue = try RawValue(messagePack: &reader)
         guard let value = Self(rawValue: rawValue) else {
-            throw MessagePackError.invalidRawValue
+            try MessagePackError.throw(.invalidRawValue)
         }
         self = value
     }

@@ -391,21 +391,21 @@ extension MessagePackFormatSink {
         case .float64(let v):
             writeDouble(v)
         case .string(let s):
-            guard s.utf8.count <= MessagePackLimits.maxLength else { throw .valueTooLarge }
+            guard s.utf8.count <= MessagePackLimits.maxLength else { try MessagePackError.throw(.valueTooLarge) }
             writeString(s)
         case .binary(let d):
-            guard d.count <= MessagePackLimits.maxLength else { throw .valueTooLarge }
+            guard d.count <= MessagePackLimits.maxLength else { try MessagePackError.throw(.valueTooLarge) }
             writeBinary(d)
         case .array(let elements):
-            guard elements.count <= MessagePackLimits.maxLength else { throw .valueTooLarge }
+            guard elements.count <= MessagePackLimits.maxLength else { try MessagePackError.throw(.valueTooLarge) }
             writeArrayHeader(count: elements.count)
             if !elements.isEmpty { stack.append(MessagePackValueFrame(items: elements)) }
         case .map(let entries):
-            guard entries.count <= MessagePackLimits.maxLength else { throw .valueTooLarge }
+            guard entries.count <= MessagePackLimits.maxLength else { try MessagePackError.throw(.valueTooLarge) }
             writeMapHeader(count: entries.count)
             if !entries.isEmpty { stack.append(MessagePackValueFrame(map: entries)) }
         case .ext(let type, let d):
-            guard d.count <= MessagePackLimits.maxLength else { throw .valueTooLarge }
+            guard d.count <= MessagePackLimits.maxLength else { try MessagePackError.throw(.valueTooLarge) }
             writeExt(type: type, data: d)
         }
     }

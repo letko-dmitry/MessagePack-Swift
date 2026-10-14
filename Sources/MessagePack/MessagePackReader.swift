@@ -56,7 +56,7 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     public mutating func readBool() throws(MessagePackError) -> Bool {
         guard let value = try parser.readRawBool() else {
-            throw MessagePackError.typeMismatch(expected: "bool", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "bool")
         }
         return value
     }
@@ -68,18 +68,17 @@ public struct MessagePackReader: ~Copyable {
         _ type: T.Type = T.self
     ) throws(MessagePackError) -> T {
         guard let raw = try parser.readRawInteger() else {
-            throw MessagePackError.typeMismatch(
-                expected: "integer", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "integer")
         }
         switch raw {
         case .signed(let value):
             guard let converted = T(exactly: value) else {
-                throw MessagePackError.integerOverflow
+                try MessagePackError.throw(.integerOverflow)
             }
             return converted
         case .unsigned(let value):
             guard let converted = T(exactly: value) else {
-                throw MessagePackError.integerOverflow
+                try MessagePackError.throw(.integerOverflow)
             }
             return converted
         }
@@ -89,7 +88,7 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     public mutating func readDouble() throws(MessagePackError) -> Double {
         guard let value = try parser.readRawDouble() else {
-            throw MessagePackError.typeMismatch(expected: "float", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "float")
         }
         return value
     }
@@ -103,7 +102,7 @@ public struct MessagePackReader: ~Copyable {
         let value = try readDouble()
         let narrowed = Float(value)
         guard !(narrowed.isInfinite && value.isFinite) else {
-            throw MessagePackError.floatOverflow
+            try MessagePackError.throw(.floatOverflow)
         }
         return narrowed
     }
@@ -113,7 +112,7 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     public mutating func readString() throws(MessagePackError) -> String {
         guard let value = try parser.readRawString() else {
-            throw MessagePackError.typeMismatch(expected: "string", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "string")
         }
         return value
     }
@@ -128,7 +127,7 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     public mutating func readStringBytes() throws(MessagePackError) -> Data {
         guard let bytes = try parser.readRawStringBytes() else {
-            throw MessagePackError.typeMismatch(expected: "string", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "string")
         }
         return Data(buffer: bytes)
     }
@@ -137,7 +136,7 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     public mutating func readBinary() throws(MessagePackError) -> Data {
         guard let value = try parser.readRawBinary() else {
-            throw MessagePackError.typeMismatch(expected: "binary", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "binary")
         }
         return value
     }
@@ -158,11 +157,11 @@ public struct MessagePackReader: ~Copyable {
         matchedBy match: (UnsafeBufferPointer<UInt8>) -> Int?
     ) throws(MessagePackError) -> Int? {
         guard let bytes = try parser.readRawStringBytes() else {
-            throw MessagePackError.typeMismatch(expected: "string", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "string")
         }
         guard let index = match(bytes) else {
             guard messagePackMakeString(bytes) != nil else {
-                throw MessagePackError.invalidUTF8
+                try MessagePackError.throw(.invalidUTF8)
             }
             return nil
         }
@@ -217,10 +216,10 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     public mutating func readArrayHeader() throws(MessagePackError) -> Int {
         guard let count = try parser.readRawArrayHeader() else {
-            throw MessagePackError.typeMismatch(expected: "array", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "array")
         }
         guard count <= parser.count - parser.offset else {
-            throw MessagePackError.insufficientData
+            try MessagePackError.throw(.insufficientData)
         }
         try enterContainer()
         return count
@@ -233,10 +232,10 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     public mutating func readMapHeader() throws(MessagePackError) -> Int {
         guard let count = try parser.readRawMapHeader() else {
-            throw MessagePackError.typeMismatch(expected: "map", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "map")
         }
         guard count <= (parser.count - parser.offset) / 2 else {
-            throw MessagePackError.insufficientData
+            try MessagePackError.throw(.insufficientData)
         }
         try enterContainer()
         return count
@@ -245,7 +244,7 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     mutating func enterContainer() throws(MessagePackError) {
         guard depth < MessagePackReader.maxDepth else {
-            throw MessagePackError.depthLimitExceeded
+            try MessagePackError.throw(.depthLimitExceeded)
         }
         depth += 1
     }
@@ -268,7 +267,7 @@ public struct MessagePackReader: ~Copyable {
     @inlinable
     public mutating func readExt() throws(MessagePackError) -> (type: Int8, data: Data) {
         guard let value = try parser.readRawExt() else {
-            throw MessagePackError.typeMismatch(expected: "ext", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "ext")
         }
         return value
     }
@@ -278,10 +277,10 @@ public struct MessagePackReader: ~Copyable {
     public mutating func readTimestamp() throws(MessagePackError) -> MessagePackTimestamp {
         // The payload is read in place: a timestamp needs no `Data` of its own.
         guard let ext = try parser.readRawExtBytes() else {
-            throw MessagePackError.typeMismatch(expected: "ext", format: try parser.peekFormat())
+            try parser.throwTypeMismatch(expected: "ext")
         }
         guard ext.type == MessagePackTimestamp.extType, let timestamp = MessagePackTimestamp(payload: ext.bytes) else {
-            throw MessagePackError.invalidTimestamp
+            try MessagePackError.throw(.invalidTimestamp)
         }
         return timestamp
     }

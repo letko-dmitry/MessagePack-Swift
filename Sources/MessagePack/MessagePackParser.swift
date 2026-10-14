@@ -38,7 +38,7 @@ func messagePackLengthExactly<T: FixedWidthInteger>(
     _ value: UInt32, as _: T.Type
 ) throws(MessagePackError) -> T {
     guard let result = T(exactly: value) else {
-        throw MessagePackError.insufficientData
+        try MessagePackError.throw(.insufficientData)
     }
     return result
 }
@@ -81,7 +81,7 @@ extension MessagePackSerializer {
         @inlinable
         @inline(__always)
         mutating func readFormatByte() throws(MessagePackError) -> UInt8 {
-            guard offset < count, let base else { throw MessagePackError.insufficientData }
+            guard offset < count, let base else { try MessagePackError.throw(.insufficientData) }
             let byte = base.load(fromByteOffset: offset, as: UInt8.self)
             offset += 1
             return byte
@@ -91,7 +91,7 @@ extension MessagePackSerializer {
         @inline(__always)
         mutating func readBigEndian<T: FixedWidthInteger>(_ type: T.Type) throws(MessagePackError) -> T {
             let size = MemoryLayout<T>.size
-            guard count - offset >= size, let base else { throw MessagePackError.insufficientData }
+            guard count - offset >= size, let base else { try MessagePackError.throw(.insufficientData) }
             let value = base.loadUnaligned(fromByteOffset: offset, as: T.self).bigEndian
             offset += size
             return value
@@ -106,14 +106,14 @@ extension MessagePackSerializer {
         @inlinable
         @inline(__always)
         mutating func readString(length: Int) throws(MessagePackError) -> String {
-            guard count - offset >= length, let base else { throw MessagePackError.insufficientData }
+            guard count - offset >= length, let base else { try MessagePackError.throw(.insufficientData) }
             let bytes = UnsafeBufferPointer(
                 start: (base + offset).assumingMemoryBound(to: UInt8.self),
                 count: length
             )
             offset += length
             guard let string = messagePackMakeString(bytes) else {
-                throw MessagePackError.invalidUTF8
+                try MessagePackError.throw(.invalidUTF8)
             }
             return string
         }
@@ -121,7 +121,7 @@ extension MessagePackSerializer {
         @inlinable
         @inline(__always)
         mutating func readData(length: Int) throws(MessagePackError) -> Data {
-            guard count - offset >= length, let base else { throw MessagePackError.insufficientData }
+            guard count - offset >= length, let base else { try MessagePackError.throw(.insufficientData) }
             let data = Data(bytes: base + offset, count: length)
             offset += length
             return data
@@ -222,13 +222,13 @@ extension MessagePackSerializer {
                         value = .array([])
                     } else {
                         guard depth < MessagePackSerializer.maxDepth else {
-                            throw MessagePackError.depthLimitExceeded
+                            try MessagePackError.throw(.depthLimitExceeded)
                         }
                         // Each element takes at least one byte, so cap the
                         // reservation by the remaining input to avoid huge
                         // allocations from hostile length claims.
                         guard elementCount <= count - offset else {
-                            throw MessagePackError.insufficientData
+                            try MessagePackError.throw(.insufficientData)
                         }
                         if depth > 0 {
                             stack.append(Frame(items: items, remaining: remaining, isMap: isMap))
@@ -251,11 +251,11 @@ extension MessagePackSerializer {
                         value = .map([:])
                     } else {
                         guard depth < MessagePackSerializer.maxDepth else {
-                            throw MessagePackError.depthLimitExceeded
+                            try MessagePackError.throw(.depthLimitExceeded)
                         }
                         // Each entry takes at least two bytes (key + value).
                         guard entryCount <= (count - offset) / 2 else {
-                            throw MessagePackError.insufficientData
+                            try MessagePackError.throw(.insufficientData)
                         }
                         if depth > 0 {
                             stack.append(Frame(items: items, remaining: remaining, isMap: isMap))
@@ -268,7 +268,7 @@ extension MessagePackSerializer {
                         continue
                     }
                 default:  // 0xc1 (never used)
-                    throw MessagePackError.invalidFormat(format)
+                    try MessagePackError.throw(.invalidFormat(format))
                 }
 
                 // Attach the completed value to the enclosing container(s),
@@ -454,7 +454,7 @@ extension MessagePackSerializer.Parser {
             offset = start
             return nil
         }
-        guard count - offset >= length, let base else { throw MessagePackError.insufficientData }
+        guard count - offset >= length, let base else { try MessagePackError.throw(.insufficientData) }
         let bytes = UnsafeBufferPointer(
             start: (base + offset).assumingMemoryBound(to: UInt8.self),
             count: length
@@ -511,7 +511,7 @@ extension MessagePackSerializer.Parser {
             return nil
         }
         let type = Int8(bitPattern: try readBigEndian(UInt8.self))
-        guard count - offset >= length, let base else { throw MessagePackError.insufficientData }
+        guard count - offset >= length, let base else { try MessagePackError.throw(.insufficientData) }
         let bytes = UnsafeRawBufferPointer(start: base + offset, count: length)
         offset += length
         return (type, bytes)
@@ -557,11 +557,19 @@ extension MessagePackSerializer.Parser {
         }
     }
 
+    /// Throws a type mismatch for the value at the cursor, which is not the
+    /// `expected` type (or `insufficientData` at the end of the input).
+    @usableFromInline
+    @inline(never)
+    func throwTypeMismatch(expected: String) throws(MessagePackError) -> Never {
+        throw .typeMismatch(expected: expected, format: try peekFormat())
+    }
+
     /// The next format byte without consuming it.
     @inlinable
     @inline(__always)
     func peekFormat() throws(MessagePackError) -> UInt8 {
-        guard offset < count, let base else { throw MessagePackError.insufficientData }
+        guard offset < count, let base else { try MessagePackError.throw(.insufficientData) }
         return base.load(fromByteOffset: offset, as: UInt8.self)
     }
 
@@ -570,7 +578,7 @@ extension MessagePackSerializer.Parser {
     mutating func skipBytes(_ n: Int, plus additional: Int = 0) throws(MessagePackError) {
         let available = count - offset
         guard n >= 0, additional >= 0, n <= available, additional <= available - n else {
-            throw MessagePackError.insufficientData
+            try MessagePackError.throw(.insufficientData)
         }
         offset += n + additional
     }
@@ -583,7 +591,7 @@ extension MessagePackSerializer.Parser {
         guard valueCount >= 0, multiplier > 0, remaining <= available,
             valueCount <= (available - remaining) / multiplier
         else {
-            throw MessagePackError.insufficientData
+            try MessagePackError.throw(.insufficientData)
         }
         remaining += valueCount * multiplier
     }
@@ -650,7 +658,7 @@ extension MessagePackSerializer.Parser {
             case 0xdf:  // map 32
                 try addPendingValues(try readLength32(), multiplier: 2, to: &remaining)
             default:  // 0xc1
-                throw MessagePackError.invalidFormat(format)
+                try MessagePackError.throw(.invalidFormat(format))
             }
         }
     }
