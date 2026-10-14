@@ -208,9 +208,14 @@ enum MessagePackDecoding {
 
     /// `offset` is where the bytes the error is about start: the value its
     /// coding path names, or the trailing bytes after the top-level value.
+    ///
+    /// Returns `any Error`, already boxed, like every error builder here.
+    /// Returned as the resilient `DecodingError`, it was boxed at each
+    /// `throw` site, which called the type's metadata accessor and
+    /// `swift_allocError`.
     @inline(never)
-    static func corrupted(_ error: consuming MessagePackError, _ path: MessagePackCodingPath, offset: Int) -> DecodingError {
-        .dataCorrupted(
+    static func corrupted(_ error: consuming MessagePackError, _ path: MessagePackCodingPath, offset: Int) -> any Error {
+        DecodingError.dataCorrupted(
             DecodingError.Context(
                 codingPath: path.keys,
                 debugDescription: "Invalid MessagePack data: \(error)\(at(offset))",
@@ -231,19 +236,19 @@ enum MessagePackDecoding {
     /// build its array of keys themselves, so that code stays off the
     /// decode paths too.
     @inline(never)
-    static func wrongType(_ type: Any.Type, _ parser: Parser, _ path: MessagePackCodingPath) -> DecodingError {
+    static func wrongType(_ type: Any.Type, _ parser: Parser, _ path: MessagePackCodingPath) -> any Error {
         guard let format = try? parser.peekFormat() else {
             return corrupted(.insufficientData, path, offset: parser.offset)
         }
         if format == 0xc0 {
-            return .valueNotFound(
+            return DecodingError.valueNotFound(
                 type,
                 DecodingError.Context(
                     codingPath: path.keys,
                     debugDescription: "Cannot decode \(type) -- found nil value instead\(at(parser.offset))"
                 ))
         }
-        return .typeMismatch(
+        return DecodingError.typeMismatch(
             type,
             DecodingError.Context(
                 codingPath: path.keys,
@@ -258,12 +263,12 @@ enum MessagePackDecoding {
     @inline(never)
     static func decodingError(
         _ failure: consuming MessagePackDecodeFailure, type: Any.Type, parser: Parser, path: MessagePackCodingPath
-    ) -> DecodingError {
+    ) -> any Error {
         switch failure {
         case .wrongType:
             return wrongType(type, parser, path)
         case .invalid(let message):
-            return .dataCorrupted(
+            return DecodingError.dataCorrupted(
                 DecodingError.Context(codingPath: path.keys, debugDescription: message + at(parser.offset)))
         case .corrupted(let error):
             return corrupted(error, path, offset: parser.offset)

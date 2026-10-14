@@ -541,8 +541,9 @@ struct MessagePackNilDecoder: Decoder, SingleValueDecodingContainer {
     let codingPath: [CodingKey]
     let userInfo: [CodingUserInfoKey: Any]
 
-    private func valueNotFound(_ type: Any.Type) -> DecodingError {
-        .valueNotFound(
+    @inline(never)
+    private func valueNotFound(_ type: Any.Type) -> any Error {
+        DecodingError.valueNotFound(
             type,
             DecodingError.Context(
                 codingPath: codingPath,
