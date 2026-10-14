@@ -35,6 +35,11 @@ public struct MessagePackDecoder {
     public struct DecimalDecodingStrategy: OptionSet, Sendable {
         public let rawValue: UInt8
 
+        // The initializer and the options are emitted into clients, which
+        // then use constants instead of calling the globals' accessors.
+
+        @inline(always)
+        @export(implementation)
         public init(rawValue: UInt8) {
             self.rawValue = rawValue
         }
@@ -43,16 +48,24 @@ public struct MessagePackDecoder {
         /// map of fields it writes
         /// (``MessagePackEncoder/DecimalEncodingStrategy/deferredToDecimal``).
         /// The default, and all that earlier versions read.
-        public static let deferredToDecimal = Self(rawValue: 1 << 0)
+        @inline(always)
+        @export(implementation)
+        public static var deferredToDecimal: Self { Self(rawValue: 1 << 0) }
         /// Converts from a string of decimal digits: what
         /// ``MessagePackEncoder/DecimalEncodingStrategy/convertToString``
         /// writes, and other languages' decimal types produce.
-        public static let convertFromString = Self(rawValue: 1 << 1)
+        @inline(always)
+        @export(implementation)
+        public static var convertFromString: Self { Self(rawValue: 1 << 1) }
         /// Converts from an integer, exactly.
-        public static let convertFromInteger = Self(rawValue: 1 << 2)
+        @inline(always)
+        @export(implementation)
+        public static var convertFromInteger: Self { Self(rawValue: 1 << 2) }
         /// Converts from a float through its shortest decimal text, so a
         /// float 64 of 0.35 reads as 0.35.
-        public static let convertFromFloat = Self(rawValue: 1 << 3)
+        @inline(always)
+        @export(implementation)
+        public static var convertFromFloat: Self { Self(rawValue: 1 << 3) }
     }
 
     /// Contextual information made available to the `Decodable` types via
