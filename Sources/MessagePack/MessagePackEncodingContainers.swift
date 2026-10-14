@@ -71,18 +71,18 @@ struct MessagePackDeferredSingleValueEncodingContainer: SingleValueEncodingConta
     var codingPath: [CodingKey] { owner.codingPath }
 
     @inline(__always)
-    private func begin() -> UnsafeMutablePointer<MessagePackEncoderState> {
+    private func beginValue() -> UnsafeMutablePointer<MessagePackEncoderState> {
         let start = owner.activate().start
         let state = owner.impl.state
         precondition(state.pointee.buffer.offset == start, secondSingleValueMessage)
         return state
     }
 
-    mutating func encodeNil() throws { begin().pointee.buffer.writeNil() }
-    mutating func encode(_ value: Bool) throws { begin().pointee.buffer.writeBool(value) }
-    mutating func encode(_ value: String) throws { begin().pointee.buffer.writeString(value) }
-    mutating func encode(_ value: Double) throws { begin().pointee.buffer.writeDouble(value) }
-    mutating func encode(_ value: Float) throws { begin().pointee.buffer.writeFloat(value) }
+    mutating func encodeNil() throws { beginValue().pointee.buffer.writeNil() }
+    mutating func encode(_ value: Bool) throws { beginValue().pointee.buffer.writeBool(value) }
+    mutating func encode(_ value: String) throws { beginValue().pointee.buffer.writeString(value) }
+    mutating func encode(_ value: Double) throws { beginValue().pointee.buffer.writeDouble(value) }
+    mutating func encode(_ value: Float) throws { beginValue().pointee.buffer.writeFloat(value) }
     mutating func encode(_ value: Int) throws { encodeSigned(value) }
     mutating func encode(_ value: Int8) throws { encodeSigned(value) }
     mutating func encode(_ value: Int16) throws { encodeSigned(value) }
@@ -96,12 +96,12 @@ struct MessagePackDeferredSingleValueEncodingContainer: SingleValueEncodingConta
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: Int128) throws {
-        try owner.impl.encodeWideInteger(value, path: owner.path) { _ = begin() }
+        try owner.impl.encodeWideInteger(value, path: owner.path) { _ = beginValue() }
     }
 
     @available(watchOS 11.0, *)
     mutating func encode(_ value: UInt128) throws {
-        try owner.impl.encodeWideInteger(value, path: owner.path) { _ = begin() }
+        try owner.impl.encodeWideInteger(value, path: owner.path) { _ = beginValue() }
     }
 
     // The ten integer overloads differ only in the width they widen from.
@@ -109,17 +109,17 @@ struct MessagePackDeferredSingleValueEncodingContainer: SingleValueEncodingConta
     // widened value, so widening here costs nothing on the wire.
     @inline(__always)
     private func encodeSigned(_ value: some SignedInteger & FixedWidthInteger) {
-        begin().pointee.buffer.writeInt(Int64(value))
+        beginValue().pointee.buffer.writeInt(Int64(value))
     }
 
     @inline(__always)
     private func encodeUnsigned(_ value: some UnsignedInteger & FixedWidthInteger) {
-        begin().pointee.buffer.writeUInt(UInt64(value))
+        beginValue().pointee.buffer.writeUInt(UInt64(value))
     }
 
     mutating func encode<T: Encodable>(_ value: T) throws {
-        _ = begin()
-        try owner.impl.encodeEncodable(value, path: owner.path)
+        _ = beginValue()
+        try owner.impl.encodeValue(value, path: owner.path)
     }
 }
 
@@ -202,7 +202,7 @@ struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainer
 
     mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
         beginEntry(key)
-        try impl.encodeEncodable(value, path: impl.path(path, appending: key))
+        try impl.encodeValue(value, path: impl.path(path, appending: key))
     }
 
     mutating func nestedContainer<NestedKey: CodingKey>(
@@ -329,7 +329,7 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
 
     mutating func encode<T: Encodable>(_ value: T) throws {
         beginElement()
-        try impl.encodeEncodable(
+        try impl.encodeValue(
             value, path: impl.path(path, appendingIndex: count - 1))
     }
 
@@ -445,6 +445,6 @@ struct MessagePackSingleValueEncodingContainer: SingleValueEncodingContainer {
 
     mutating func encode<T: Encodable>(_ value: T) throws {
         beginValue()
-        try impl.encodeEncodable(value, path: path)
+        try impl.encodeValue(value, path: path)
     }
 }

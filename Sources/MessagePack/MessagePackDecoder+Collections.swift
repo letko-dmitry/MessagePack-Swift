@@ -2,8 +2,8 @@
 
 extension MessagePackDecoding {
     /// Decodes a value of a fast-path collection type. Out of line, so the
-    /// casts to `T` keep their stack temporaries out of `unwrap`, which every
-    /// decoded value passes through.
+    /// casts to `T` keep their stack temporaries out of `decodeValue`, which
+    /// every decoded value passes through.
     @inline(never)
     static func decodeCollection<T: Decodable>(
         _ collectionType: MessagePackCollectionType,
@@ -18,47 +18,47 @@ extension MessagePackDecoding {
         // optimizer then merges into one function.
         switch collectionType {
         case .intArray:
-            return try primitiveArray(&parser, path, readIntegerInlined) as [Int] as! T
+            return try decodePrimitiveArray(&parser, path, readIntegerInlined) as [Int] as! T
         case .stringArray:
-            return try primitiveArray(&parser, path, readString) as [String] as! T
+            return try decodePrimitiveArray(&parser, path, readString) as [String] as! T
         case .doubleArray:
-            return try primitiveArray(&parser, path, readDouble) as [Double] as! T
+            return try decodePrimitiveArray(&parser, path, readDouble) as [Double] as! T
         case .boolArray:
-            return try primitiveArray(&parser, path, readBool) as [Bool] as! T
+            return try decodePrimitiveArray(&parser, path, readBool) as [Bool] as! T
         case .floatArray:
-            return try primitiveArray(&parser, path, readFloat) as [Float] as! T
+            return try decodePrimitiveArray(&parser, path, readFloat) as [Float] as! T
         case .int64Array:
-            return try primitiveArray(&parser, path, readInteger) as [Int64] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [Int64] as! T
         case .uInt64Array:
-            return try primitiveArray(&parser, path, readInteger) as [UInt64] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt64] as! T
         case .int32Array:
-            return try primitiveArray(&parser, path, readInteger) as [Int32] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [Int32] as! T
         case .uInt32Array:
-            return try primitiveArray(&parser, path, readInteger) as [UInt32] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt32] as! T
         case .int16Array:
-            return try primitiveArray(&parser, path, readInteger) as [Int16] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [Int16] as! T
         case .uInt16Array:
-            return try primitiveArray(&parser, path, readInteger) as [UInt16] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt16] as! T
         case .int8Array:
-            return try primitiveArray(&parser, path, readInteger) as [Int8] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [Int8] as! T
         case .uInt8Array:
-            return try primitiveArray(&parser, path, readInteger) as [UInt8] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt8] as! T
         case .uIntArray:
-            return try primitiveArray(&parser, path, readInteger) as [UInt] as! T
+            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt] as! T
         case .intDictionary:
-            if let dictionary = primitiveDictionary(&parser, readIntegerInlined) as [String: Int]? {
+            if let dictionary = decodePrimitiveDictionary(&parser, readIntegerInlined) as [String: Int]? {
                 return dictionary as! T
             }
         case .stringDictionary:
-            if let dictionary = primitiveDictionary(&parser, readString) as [String: String]? {
+            if let dictionary = decodePrimitiveDictionary(&parser, readString) as [String: String]? {
                 return dictionary as! T
             }
         case .doubleDictionary:
-            if let dictionary = primitiveDictionary(&parser, readDouble) as [String: Double]? {
+            if let dictionary = decodePrimitiveDictionary(&parser, readDouble) as [String: Double]? {
                 return dictionary as! T
             }
         case .boolDictionary:
-            if let dictionary = primitiveDictionary(&parser, readBool) as [String: Bool]? {
+            if let dictionary = decodePrimitiveDictionary(&parser, readBool) as [String: Bool]? {
                 return dictionary as! T
             }
         }
@@ -71,7 +71,7 @@ extension MessagePackDecoding {
     /// loop over the raw bytes, bypassing the unkeyed-container machinery.
     /// Error behavior matches the machinery: element failures are reported at
     /// the element's index in the coding path.
-    static func primitiveArray<E>(
+    static func decodePrimitiveArray<E>(
         _ parser: inout Parser,
         _ path: () -> MessagePackCodingPath,
         _ read: (inout Parser) throws(MessagePackDecodeFailure) -> E
@@ -109,7 +109,7 @@ extension MessagePackDecoding {
     }
 
     /// Decodes a string-keyed dictionary of a natively represented value
-    /// type with a tight loop over the raw bytes, like ``primitiveArray``.
+    /// type with a tight loop over the raw bytes, like ``decodePrimitiveArray``.
     ///
     /// Returns nil with the parser rewound for anything but a map of unique
     /// string keys and values of type `V`, which the container machinery
@@ -117,7 +117,7 @@ extension MessagePackDecoding {
     /// integer keys into their decimal strings, skips keys that are not
     /// valid UTF-8, keeps whichever of duplicate keys its lookups reach last,
     /// and reports errors with its types and paths.
-    static func primitiveDictionary<V>(
+    static func decodePrimitiveDictionary<V>(
         _ parser: inout Parser,
         _ read: (inout Parser) throws(MessagePackDecodeFailure) -> V
     ) -> [String: V]? {

@@ -10,7 +10,7 @@ import Foundation
 /// instead of once more by every enclosing map's scan.
 ///
 /// A class so it can be recycled across the containers of one `decode`
-/// call through ``MessagePackDecodingContext/borrowKeyedStorage()`` (so
+/// call through ``MessagePackDecodingContext/reusableKeyedStorage()`` (so
 /// `reset` must leave no state behind from a previous use) and referred to
 /// from the context while its value is being decoded.
 final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State, Void> {
@@ -88,7 +88,7 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
                 keyLength = -1
             }
             let valueOffset = parser.offset
-            let isContainer = Self.isContainer(try parser.peekFormat())
+            let isContainer = Self.isContainerFormat(try parser.peekFormat())
             if !isContainer {
                 try parser.skipValue()
             }
@@ -106,7 +106,7 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
     }
 
     @inline(__always)
-    private static func isContainer(_ format: UInt8) -> Bool {
+    private static func isContainerFormat(_ format: UInt8) -> Bool {
         (0x80...0x9f).contains(format) || (0xdc...0xdf).contains(format)
     }
 
@@ -136,7 +136,7 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
     }
 
     /// Scans the entries no lookup reached and returns where the map ends.
-    func end(_ context: MessagePackDecodingContext) throws(MessagePackError) -> Int {
+    func mapEnd(_ context: MessagePackDecodingContext) throws(MessagePackError) -> Int {
         while scannedCount < entryCount {
             try scanAhead(context)
         }
@@ -175,7 +175,7 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     var allKeys: [Key] {
         // A map that fails to scan lists the keys before the failure; the
         // failure itself surfaces when the value's end is needed.
-        _ = try? storage.end(context)
+        _ = try? storage.mapEnd(context)
 
         var keys: [Key] = []
         keys.reserveCapacity(storage.scannedCount)
@@ -491,7 +491,7 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     /// where the next entry's key starts.
     private func decode<T: Decodable>(_ type: T.Type, entry index: Int, forKey key: Key) throws -> T {
         var parser = context.parser(at: storage.entry(at: index).valueOffset)
-        let value = try MessagePackDecoding.unwrap(
+        let value = try MessagePackDecoding.decodeValue(
             type, parser: &parser, context: context, path: path.appending(key))
         storage.recordValueEnd(parser.offset, at: index)
 
@@ -610,7 +610,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     var isAtEnd: Bool { currentIndex >= elementCount }
 
     /// Advances the element index; on decoding the final element, records
-    /// where this array ends so `unwrap` can reuse it instead of re-skipping.
+    /// where this array ends so `decodeValue` can reuse it instead of
+    /// re-skipping.
     @inline(__always)
     private mutating func advanceIndex() {
         currentIndex += 1
@@ -734,7 +735,7 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         // `self` while `parser` is passed inout.
         let parentPath = path
         let index = currentIndex
-        let value = try MessagePackDecoding.unwrap(
+        let value = try MessagePackDecoding.decodeValue(
             type, parser: &parser, context: context, path: parentPath.appending(index: index))
         advanceIndex()
         return value

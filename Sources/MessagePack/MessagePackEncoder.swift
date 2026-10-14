@@ -74,7 +74,7 @@ public struct MessagePackEncoder {
         try MessagePackEncoderState.with(userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy) { state in
             let impl = MessagePackEncoderImpl(state: state)
             do {
-                try impl.encodeEncodable(value, path: .root)
+                try impl.encodeValue(value, path: .root)
             } catch {
                 state.pointee.buffer.deallocate()
                 throw error
@@ -233,7 +233,7 @@ struct MessagePackEncoderImpl {
     /// container machinery (and its per-value encoder and coding-path
     /// allocations); the path closure only runs when a value actually needs
     /// it (nested encoders and errors).
-    func encodeEncodable<T: Encodable>(
+    func encodeValue<T: Encodable>(
         _ value: T, path: @autoclosure () -> MessagePackEncodingPath
     ) throws {
         switch withUnsafePointer(to: value, { encodeNative(T.self, UnsafeRawPointer($0)) }) {
@@ -264,7 +264,7 @@ struct MessagePackEncoderImpl {
     /// Writes the value at `value` if its type is natively represented.
     ///
     /// Out of line and not generic: one copy of the type checks, and no
-    /// resilient `Date` or `Decimal` in the generic `encodeEncodable`, which
+    /// resilient `Date` or `Decimal` in the generic `encodeValue`, which
     /// would otherwise size its frame (and probe the stack) on every call.
     /// Types are matched by metadata identity and read through the raw
     /// pointer: an `as!` per type reserves a stack temporary per cast site

@@ -98,7 +98,7 @@ public struct MessagePackDecoder {
             return try withUnsafeMutablePointer(to: &state) { state in
                 let context = MessagePackDecodingContext(state: state)
                 var parser = context.parser(at: 0)
-                let value = try MessagePackDecoding.unwrap(
+                let value = try MessagePackDecoding.decodeValue(
                     type, parser: &parser, context: context, path: .root)
                 guard parser.offset == raw.count else {
                     throw MessagePackDecoding.corrupted(.trailingBytes, .root, offset: parser.offset)
@@ -129,15 +129,15 @@ struct MessagePackDecodingContext {
         /// storage tracks: an unkeyed container that decoded its last
         /// element, or a value decoded through a single-value container
         /// (`Optional` and other wrappers). It lets
-        /// ``MessagePackDecoding/unwrap(_:parser:context:path:)`` advance past
-        /// the value starting at `memoStart` without skipping it a second
-        /// time. A stale memo is harmless: byte offsets uniquely identify
-        /// values, so a matching `memoStart` always implies the same
-        /// `memoEnd`.
+        /// ``MessagePackDecoding/decodeValue(_:parser:context:path:)``
+        /// advance past the value starting at `memoStart` without skipping
+        /// it a second time. A stale memo is harmless: byte offsets uniquely
+        /// identify values, so a matching `memoStart` always implies the
+        /// same `memoEnd`.
         var memoStart = -1
         var memoEnd = -1
 
-        /// The value ``MessagePackDecoding/unwrap(_:parser:context:path:)``
+        /// The value ``MessagePackDecoding/decodeValue(_:parser:context:path:)``
         /// is decoding through its `Decodable` conformance, and the storage
         /// of the map that value opened, if any. Nested decodes save and
         /// restore both, so once `init(from:)` returns they describe the
@@ -168,7 +168,7 @@ struct MessagePackDecodingContext {
     /// The pool is bounded: with more than `poolLimit` containers alive at
     /// once (keyed nesting that deep is rare), extra storages are simply not
     /// pooled.
-    func borrowKeyedStorage() -> MessagePackKeyedStorage {
+    func reusableKeyedStorage() -> MessagePackKeyedStorage {
         for index in state.pointee.storagePool.indices {
             if isKnownUniquelyReferenced(&state.pointee.storagePool[index]) {
                 return state.pointee.storagePool[index]
@@ -324,10 +324,10 @@ enum MessagePackDecoding {
 
         switch raw {
         case .signed(let v):
-            guard let value = T(exactly: v) else { throw doesNotFit(v, T.self) }
+            guard let value = T(exactly: v) else { throw outOfRange(v, T.self) }
             return value
         case .unsigned(let v):
-            guard let value = T(exactly: v) else { throw doesNotFit(v, T.self) }
+            guard let value = T(exactly: v) else { throw outOfRange(v, T.self) }
             return value
         }
     }
@@ -335,7 +335,7 @@ enum MessagePackDecoding {
     /// The failure for a wire number outside the requested type's range. Out
     /// of line and non-generic, so the message is built in one place.
     @inline(never)
-    static func doesNotFit(_ number: Any, _ type: Any.Type) -> MessagePackDecodeFailure {
+    static func outOfRange(_ number: Any, _ type: Any.Type) -> MessagePackDecodeFailure {
         .invalid("Number \(number) does not fit in \(type)")
     }
 
@@ -382,7 +382,7 @@ enum MessagePackDecoding {
         // A finite float64 must stay finite as Float; JSONDecoder likewise
         // rejects numbers that do not fit the requested type.
         if narrowed.isInfinite && value.isFinite {
-            throw doesNotFit(value, Float.self)
+            throw outOfRange(value, Float.self)
         }
         return narrowed
     }
@@ -475,7 +475,7 @@ enum MessagePackDecoding {
     /// natively decode directly, bypassing the `Decodable` container
     /// machinery (and its per-value decoder, existential, and coding-path
     /// allocations).
-    static func unwrap<T: Decodable>(
+    static func decodeValue<T: Decodable>(
         _ type: T.Type,
         parser: inout Parser,
         context: MessagePackDecodingContext,
@@ -546,7 +546,7 @@ enum MessagePackDecoding {
 
         if let storage = state.pointee.decodingStorage {
             do throws(MessagePackError) {
-                parser.offset = try storage.end(context)
+                parser.offset = try storage.mapEnd(context)
             } catch {
                 throw corrupted(error, path, offset: startOffset)
             }
@@ -602,7 +602,7 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
         guard entryCount <= (parser.count - parser.offset) / 2 else {
             throw MessagePackDecoding.corrupted(.insufficientData, path, offset: offset)
         }
-        let storage = context.borrowKeyedStorage()
+        let storage = context.reusableKeyedStorage()
         storage.reset(firstKeyOffset: parser.offset, entryCount: entryCount)
         if context.state.pointee.decodingOffset == offset {
             context.state.pointee.decodingStorage = storage
@@ -686,11 +686,11 @@ struct MessagePackDecoderImpl: Decoder, SingleValueDecodingContainer {
 
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
         var parser = context.parser(at: offset)
-        let value = try MessagePackDecoding.unwrap(
+        let value = try MessagePackDecoding.decodeValue(
             type, parser: &parser, context: context, path: path)
 
         // This decoder's own value ends where the one it wraps does. The
-        // `unwrap` that created this decoder (for `Optional` and other
+        // `decodeValue` that created this decoder (for `Optional` and other
         // single-value wrappers) would otherwise skip the value again.
         context.state.pointee.memoStart = offset
         context.state.pointee.memoEnd = parser.offset

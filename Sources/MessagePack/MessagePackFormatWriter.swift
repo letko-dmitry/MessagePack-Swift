@@ -161,8 +161,8 @@ extension MessagePackFormatSink {
 
     @inlinable
     @inline(__always)
-    mutating func writeBinary(_ d: Data) {
-        let length = d.count
+    mutating func writeBinary(_ data: Data) {
+        let length = data.count
         if length <= 0xff {
             writeByte(0xc4)
             writeByte(UInt8(truncatingIfNeeded: length))
@@ -176,7 +176,7 @@ extension MessagePackFormatSink {
             writeByte(0xc6)
             writeBigEndian(UInt32(truncatingIfNeeded: length))
         }
-        d.withUnsafeBytes { bytes in
+        data.withUnsafeBytes { bytes in
             if let baseAddress = bytes.baseAddress {
                 writeBytes(baseAddress, count: bytes.count)
             }
@@ -207,8 +207,8 @@ extension MessagePackFormatSink {
 
     @inlinable
     @inline(__always)
-    mutating func writeExt(type: Int8, data d: Data) {
-        let length = d.count
+    mutating func writeExt(type: Int8, data: Data) {
+        let length = data.count
         switch length {
         case 1: writeByte(0xd4)
         case 2: writeByte(0xd5)
@@ -231,7 +231,7 @@ extension MessagePackFormatSink {
             }
         }
         writeByte(UInt8(bitPattern: type))
-        d.withUnsafeBytes { bytes in
+        data.withUnsafeBytes { bytes in
             if let baseAddress = bytes.baseAddress {
                 writeBytes(baseAddress, count: bytes.count)
             }
