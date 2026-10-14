@@ -68,12 +68,12 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                         if let value = _msgpack_bar {
                             self.`bar` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("bar")
+                            try MessagePack.MessagePackReader.throwMissingField("bar")
                         }
                         if let value = _msgpack_hoge {
                             self.`hoge` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("hoge")
+                            try MessagePack.MessagePackReader.throwMissingField("hoge")
                         }
                     }
                 }
@@ -194,7 +194,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                         if let value = _msgpack_name {
                             self.`name` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("n")
+                            try MessagePack.MessagePackReader.throwMissingField("n")
                         }
                     }
                 }
@@ -259,12 +259,12 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                         if let value = _msgpack_first {
                             self.`first` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("first")
+                            try MessagePack.MessagePackReader.throwMissingField("first")
                         }
                         if let value = _msgpack_second {
                             self.`second` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("second")
+                            try MessagePack.MessagePackReader.throwMissingField("second")
                         }
                     }
                 }
@@ -317,7 +317,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                         if let value = _msgpack_a {
                             self.`a` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("a")
+                            try MessagePack.MessagePackReader.throwMissingField("a")
                         }
                     }
                 }
@@ -442,17 +442,17 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                         if let value = _msgpack_sharedPrefixAlpha {
                             self.`sharedPrefixAlpha` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("sharedPrefixAlpha")
+                            try MessagePack.MessagePackReader.throwMissingField("sharedPrefixAlpha")
                         }
                         if let value = _msgpack_sharedPrefixBeta {
                             self.`sharedPrefixBeta` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("sharedPrefixBeta")
+                            try MessagePack.MessagePackReader.throwMissingField("sharedPrefixBeta")
                         }
                         if let value = _msgpack_sharedPrefixGamma {
                             self.`sharedPrefixGamma` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("sharedPrefixGamma")
+                            try MessagePack.MessagePackReader.throwMissingField("sharedPrefixGamma")
                         }
                     }
                 }
@@ -646,7 +646,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                         if let value = _msgpack_kept {
                             self.`kept` = value
                         } else {
-                            throw MessagePack.MessagePackError.missingField("kept")
+                            try MessagePack.MessagePackReader.throwMissingField("kept")
                         }
                     }
                 }

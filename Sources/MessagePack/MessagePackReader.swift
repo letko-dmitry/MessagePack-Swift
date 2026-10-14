@@ -207,6 +207,15 @@ public struct MessagePackReader: ~Copyable {
         return value
     }
 
+    /// Throws ``MessagePackError/missingField(_:)`` for the field `key`.
+    /// Generated `init(messagePack:)` implementations call this for absent
+    /// required fields: a typed `throw` costs about 80 bytes of code where it
+    /// is written, which out of line is paid once.
+    @inline(never)
+    public static func throwMissingField(_ key: consuming String) throws(MessagePackError) -> Never {
+        throw .missingField(key)
+    }
+
     // MARK: Containers and extensions
 
     /// Reads an array header, enters the container, and returns the element

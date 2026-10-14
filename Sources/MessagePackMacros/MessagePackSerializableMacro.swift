@@ -303,7 +303,7 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
                     lines.append("        self.`\(field.name)` = value")
                     lines.append("    } else {")
                     lines.append(
-                        "        throw MessagePack.MessagePackError.missingField(\(literal(field.key)))"
+                        "        try MessagePack.MessagePackReader.throwMissingField(\(literal(field.key)))"
                     )
                     lines.append("    }")
                 }
