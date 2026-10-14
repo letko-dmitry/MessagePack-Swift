@@ -209,7 +209,7 @@ enum MessagePackDecoding {
     /// `offset` is where the bytes the error is about start: the value its
     /// coding path names, or the trailing bytes after the top-level value.
     @inline(never)
-    static func corrupted(_ error: MessagePackError, _ path: MessagePackCodingPath, offset: Int) -> DecodingError {
+    static func corrupted(_ error: consuming MessagePackError, _ path: MessagePackCodingPath, offset: Int) -> DecodingError {
         .dataCorrupted(
             DecodingError.Context(
                 codingPath: path.keys,
@@ -257,7 +257,7 @@ enum MessagePackDecoding {
     /// here keeps the happy path allocation-free.
     @inline(never)
     static func decodingError(
-        _ failure: MessagePackDecodeFailure, type: Any.Type, parser: Parser, path: MessagePackCodingPath
+        _ failure: consuming MessagePackDecodeFailure, type: Any.Type, parser: Parser, path: MessagePackCodingPath
     ) -> DecodingError {
         switch failure {
         case .wrongType:

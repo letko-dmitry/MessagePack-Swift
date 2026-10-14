@@ -394,7 +394,7 @@ struct MessagePackEncoderImpl {
     // resilient `Date` off the encode paths.
 
     @inline(never)
-    static func unrepresentableDate(_ value: Any, codingPath: [CodingKey]) -> any Error {
+    static func unrepresentableDate(_ value: Any, codingPath: consuming [CodingKey]) -> any Error {
         let interval = (value as? Date)?.timeIntervalSince1970 ?? .nan
         return EncodingError.invalidValue(
             value,
@@ -406,7 +406,7 @@ struct MessagePackEncoderImpl {
     }
 
     @inline(never)
-    static func nothingEncoded(_ value: Any, type: Any.Type, codingPath: [CodingKey]) -> any Error {
+    static func nothingEncoded(_ value: consuming Any, type: Any.Type, codingPath: consuming [CodingKey]) -> any Error {
         EncodingError.invalidValue(
             value,
             EncodingError.Context(
