@@ -387,6 +387,20 @@ extension MessagePackSerializer.Parser {
         }
     }
 
+    /// Reads any integer format as the nearest `Float`, or rewinds and returns
+    /// `nil` if the next value is not an integer. Converted directly: through
+    /// a `Double`, an integer beyond 2^53 is rounded twice and can end up one
+    /// `Float` step off (2^60 + 2^36 + 1 would become 2^60).
+    @inlinable
+    @inline(__always)
+    mutating func readRawIntegerAsFloat() throws(MessagePackError) -> Float? {
+        guard let raw = try readRawInteger() else { return nil }
+        switch raw {
+        case .signed(let v): return Float(v)
+        case .unsigned(let v): return Float(v)
+        }
+    }
+
     /// Consumes a nil marker if the next value is nil, and returns whether it
     /// did. Unlike the other `readRaw` methods this reports presence rather
     /// than a payload, so it needs no rewind: nothing is consumed unless the

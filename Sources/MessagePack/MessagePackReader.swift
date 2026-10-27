@@ -94,17 +94,23 @@ public struct MessagePackReader: ~Copyable {
     }
 
     /// Reads a float 32/64 (or, leniently, any integer) as a `Float`.
-    /// float 64 values are rounded to the nearest `Float`; finite values that
-    /// overflow `Float`'s range throw ``MessagePackError/floatOverflow``
-    /// (matching ``MessagePackDecoder``) instead of becoming infinite.
+    /// float 64 values and integers are rounded to the nearest `Float`;
+    /// finite float 64 values that overflow `Float`'s range throw
+    /// ``MessagePackError/floatOverflow`` (matching ``MessagePackDecoder``)
+    /// instead of becoming infinite.
     @inlinable
     public mutating func readFloat() throws(MessagePackError) -> Float {
-        let value = try readDouble()
-        let narrowed = Float(value)
-        guard !(narrowed.isInfinite && value.isFinite) else {
-            try MessagePackError.throw(.floatOverflow)
+        if let value = try parser.readRawFloat() {
+            let narrowed = Float(value)
+            guard !(narrowed.isInfinite && value.isFinite) else {
+                try MessagePackError.throw(.floatOverflow)
+            }
+            return narrowed
         }
-        return narrowed
+        guard let value = try parser.readRawIntegerAsFloat() else {
+            try parser.throwTypeMismatch(expected: "float")
+        }
+        return value
     }
 
     /// Reads a string, throwing ``MessagePackError/invalidUTF8`` if its

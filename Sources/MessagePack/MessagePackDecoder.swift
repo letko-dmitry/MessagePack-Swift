@@ -411,7 +411,14 @@ enum MessagePackDecoding {
 
     @inline(__always)
     static func readFloat(_ parser: inout Parser) throws(MessagePackDecodeFailure) -> Float {
-        let value = try readDouble(&parser)
+        let value: Double?
+        do throws(MessagePackError) {
+            value = try parser.readRawFloat()
+        } catch {
+            throw .corrupted(error)
+        }
+        guard let value else { return try readIntegerAsFloat(&parser) }
+
         let narrowed = Float(value)
         // A finite float64 must stay finite as Float; JSONDecoder likewise
         // rejects numbers that do not fit the requested type.
@@ -419,6 +426,19 @@ enum MessagePackDecoding {
             throw outOfRange(value, Float.self)
         }
         return narrowed
+    }
+
+    /// Leniently reads any integer as the nearest `Float`.
+    @inline(__always)
+    private static func readIntegerAsFloat(_ parser: inout Parser) throws(MessagePackDecodeFailure) -> Float {
+        let value: Float?
+        do throws(MessagePackError) {
+            value = try parser.readRawIntegerAsFloat()
+        } catch {
+            throw .corrupted(error)
+        }
+        guard let value else { throw .wrongType }
+        return value
     }
 
     @inline(__always)

@@ -189,3 +189,48 @@ struct FloatsForIntegersTests {
         }
     }
 }
+
+// MARK: - Integers for floats
+
+/// An integer decodes into a `Float`, as in earlier versions, rounded once
+/// to the nearest `Float` on every route.
+@Suite("Integers for floats")
+struct IntegersForFloatsTests {
+    /// Integers that a `Double` rounds onto the midpoint between two
+    /// `Float`s, so rounding that `Double` again lands one step off, with
+    /// the nearest `Float` of each.
+    private static let cases: [(integer: MessagePackValue, nearest: Float)] = [
+        (.int64((1 << 60) + (1 << 36) + 1), Float(sign: .plus, exponent: 60, significand: 1 + .ulpOfOne)),
+        (.int64(-((1 << 60) + (1 << 36) + 1)), Float(sign: .minus, exponent: 60, significand: 1 + .ulpOfOne)),
+        (.uint64((1 << 63) + (1 << 39) + 1), Float(sign: .plus, exponent: 63, significand: 1 + .ulpOfOne)),
+    ]
+
+    @Test func integersRoundOnceOnEveryRoute() throws {
+        for (integer, nearest) in Self.cases {
+            let double = try #require(integer.int64Value.map(Double.init) ?? integer.uint64Value.map(Double.init))
+            #expect(Float(double) != nearest, "Through a Double, \(integer) is rounded twice")
+
+            let data = try MessagePackSerializer.serialize(value: integer)
+            #expect(try MessagePackDecoder().decode(Float.self, from: data) == nearest)
+            #expect(try MessagePackSerializer.deserialize(Float.self, from: data) == nearest)
+
+            let field = try MessagePackSerializer.serialize(value: .map([.string("value"): integer]))
+            #expect(try MessagePackDecoder().decode(Box<Float>.self, from: field).value == nearest)
+
+            let array = try MessagePackSerializer.serialize(value: .array([integer]))
+            #expect(try MessagePackDecoder().decode([Float].self, from: array) == [nearest])
+        }
+    }
+
+    @Test func otherNumbersDecodeAsBefore() throws {
+        let cases: [(MessagePackValue, Float)] = [
+            (.uint8(3), 3), (.int8(-32), -32), (.uint64(1 << 53), 0x1p53),
+            (.float32(1.5), 1.5), (.float64(0.1), Float(0.1 as Double)),
+        ]
+        for (value, float) in cases {
+            let data = try MessagePackSerializer.serialize(value: value)
+            #expect(try MessagePackDecoder().decode(Float.self, from: data) == float)
+            #expect(try MessagePackSerializer.deserialize(Float.self, from: data) == float)
+        }
+    }
+}
