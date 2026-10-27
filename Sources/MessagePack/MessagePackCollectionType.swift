@@ -67,10 +67,10 @@ enum MessagePackCollectionType {
     }
 }
 
-/// Whether a value of `type` is as wide as a dictionary, one reference: other
-/// types skip the conformance checks for one.
+/// Whether a value of `type` is one reference wide, as an `Array` and a
+/// `Dictionary` are: other types skip the conformance checks for them.
 @inline(__always)
-func messagePackHasDictionaryWidth(_ type: Any.Type) -> Bool {
+func messagePackIsOneReferenceWide(_ type: Any.Type) -> Bool {
     func size<T>(of _: T.Type) -> Int { MemoryLayout<T>.size }
-    return size(of: type) == MemoryLayout<[Int: Int]>.size
+    return size(of: type) == MemoryLayout<UnsafeRawPointer>.size
 }

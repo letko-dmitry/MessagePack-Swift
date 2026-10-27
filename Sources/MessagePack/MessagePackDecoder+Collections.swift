@@ -201,12 +201,7 @@ extension MessagePackDecoding {
     /// what is reserved up front.
     ///
     /// Out of line, so the casts keep their stack temporaries out of
-    /// `decodeValue`, which an optional result would also have added to. The
-    /// last array type and the last other type checked are remembered: a
-    /// failed conformance check costs about 700 instructions, and would be
-    /// repeated for every element of an array of a custom type that decodes
-    /// from a wire array, or for every `[T]?` decoded through its own
-    /// conformance, as it alternates with `[T]`.
+    /// `decodeValue`, which an optional result would also have added to.
     @inline(never)
     static func decodeArray<T: Decodable>(
         _ type: T.Type,
@@ -216,23 +211,12 @@ extension MessagePackDecoding {
     ) throws -> T {
         // A header that fails to read is reported by the machinery.
         var elements = parser
-        guard let elementCount = try? elements.readRawArrayHeader(),
-            elementCount >= 2, elementCount <= messagePackMaxPreallocation
-        else {
-            return try decodeWithContainers(type, parser: &parser, context: context, path: path)
-        }
-
         let state = context.state
-        let arrayType: any MessagePackDecodableArray.Type
-        if let known = state.pointee.arrayType, known.type == ObjectIdentifier(T.self) {
-            arrayType = known.arrayType
-        } else if state.pointee.nonArrayType != ObjectIdentifier(T.self),
-            let checked = T.self as? any MessagePackDecodableArray.Type
-        {
-            arrayType = checked
-            state.pointee.arrayType = (ObjectIdentifier(T.self), checked)
-        } else {
-            state.pointee.nonArrayType = ObjectIdentifier(T.self)
+        guard let elementCount = try? elements.readRawArrayHeader(),
+            elementCount >= 2, elementCount <= messagePackMaxPreallocation,
+            messagePackIsOneReferenceWide(T.self),
+            let arrayType = state.pointee.arrayConformance(of: T.self)
+        else {
             return try decodeWithContainers(type, parser: &parser, context: context, path: path)
         }
 
@@ -261,5 +245,35 @@ extension MessagePackDecoding {
             parser.offset = startOffset
             throw error
         }
+    }
+}
+
+extension MessagePackDecodingContext.State {
+    /// The conformance of `type` to ``MessagePackDecodableArray``, if any,
+    /// remembered for the last four types checked, each replaced in turn. A
+    /// conformance check costs about 700 instructions unless the type is the
+    /// one checked just before, and a struct often has fields of two or three
+    /// such types that a single slot would alternate.
+    @inline(__always)
+    mutating func arrayConformance(of type: Any.Type) -> (any MessagePackDecodableArray.Type)? {
+        let identifier = ObjectIdentifier(type)
+        if let entry = arrayTypes.0, entry.type == identifier { return entry.conformance }
+        if let entry = arrayTypes.1, entry.type == identifier { return entry.conformance }
+        if let entry = arrayTypes.2, entry.type == identifier { return entry.conformance }
+        if let entry = arrayTypes.3, entry.type == identifier { return entry.conformance }
+        return checkArrayConformance(of: type)
+    }
+
+    @inline(never)
+    private mutating func checkArrayConformance(of type: Any.Type) -> (any MessagePackDecodableArray.Type)? {
+        let entry: ArrayType = (ObjectIdentifier(type), type as? any MessagePackDecodableArray.Type)
+        switch arrayTypeCount & 3 {
+        case 0: arrayTypes.0 = entry
+        case 1: arrayTypes.1 = entry
+        case 2: arrayTypes.2 = entry
+        default: arrayTypes.3 = entry
+        }
+        arrayTypeCount &+= 1
+        return entry.conformance
     }
 }

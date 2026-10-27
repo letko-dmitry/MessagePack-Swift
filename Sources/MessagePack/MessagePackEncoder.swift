@@ -139,13 +139,40 @@ struct MessagePackEncodingState {
     /// The nodes of the coding paths in use; see ``MessagePackEncodingPath``.
     var pathNodes: MessagePackStack<MessagePackEncodingPath.Node>
 
-    /// The last `Dictionary` type ``MessagePackEncodingContext/encodeDictionary(_:path:)``
-    /// wrote, and the last four other types checked, replaced in turn: a
-    /// struct often has fields of two or three such types, such as an array
-    /// and a wrapper of one value, which a single one would alternate.
-    var dictionaryType: (type: ObjectIdentifier, dictionaryType: any MessagePackEncodableDictionary.Type)?
-    var nonDictionaryTypes: (ObjectIdentifier?, ObjectIdentifier?, ObjectIdentifier?, ObjectIdentifier?)
-    var nonDictionaryTypeCount = 0
+    /// The `Dictionary` type ``MessagePackEncodingContext/encodeDictionary(_:path:)``
+    /// writes next, and the types checked for one; see
+    /// ``dictionaryConformance(of:)``.
+    var dictionaryType: (any MessagePackEncodableDictionary.Type)?
+    var dictionaryTypes: (DictionaryType?, DictionaryType?, DictionaryType?, DictionaryType?)
+    var dictionaryTypeCount = 0
+    typealias DictionaryType = (type: ObjectIdentifier, conformance: (any MessagePackEncodableDictionary.Type)?)
+
+    /// The conformance of `type` to ``MessagePackEncodableDictionary``, if
+    /// any, remembered for the last four types checked, each replaced in
+    /// turn, as ``MessagePackDecodingContext/State/arrayConformance(of:)``
+    /// does.
+    @inline(__always)
+    mutating func dictionaryConformance(of type: Any.Type) -> (any MessagePackEncodableDictionary.Type)? {
+        let identifier = ObjectIdentifier(type)
+        if let entry = dictionaryTypes.0, entry.type == identifier { return entry.conformance }
+        if let entry = dictionaryTypes.1, entry.type == identifier { return entry.conformance }
+        if let entry = dictionaryTypes.2, entry.type == identifier { return entry.conformance }
+        if let entry = dictionaryTypes.3, entry.type == identifier { return entry.conformance }
+        return checkDictionaryConformance(of: type)
+    }
+
+    @inline(never)
+    private mutating func checkDictionaryConformance(of type: Any.Type) -> (any MessagePackEncodableDictionary.Type)? {
+        let entry: DictionaryType = (ObjectIdentifier(type), type as? any MessagePackEncodableDictionary.Type)
+        switch dictionaryTypeCount & 3 {
+        case 0: dictionaryTypes.0 = entry
+        case 1: dictionaryTypes.1 = entry
+        case 2: dictionaryTypes.2 = entry
+        default: dictionaryTypes.3 = entry
+        }
+        dictionaryTypeCount &+= 1
+        return entry.conformance
+    }
 
     /// Registers one new entry in the container at `position`, closing any
     /// nested containers opened after it. Returns false if that container
@@ -382,35 +409,13 @@ struct MessagePackEncodingContext {
     /// ``MessagePackEncoder/DictionaryEncodingStrategy/convertToMap`` writes
     /// as a map; remembers it for ``encodeDictionary(_:path:)``.
     ///
-    /// The types checked are remembered, much as
-    /// ``MessagePackDecoding/decodeArray(_:parser:context:path:)`` does: a
-    /// failed conformance check costs about 700 instructions. Only a value
-    /// as wide as a dictionary, one reference, can be one, so other structs
-    /// skip both.
     @inline(never)
     private func isDictionary(_ type: Any.Type) -> Bool {
-        guard messagePackHasDictionaryWidth(type) else { return false }
+        guard messagePackIsOneReferenceWide(type),
+            let dictionaryType = state.pointee.dictionaryConformance(of: type)
+        else { return false }
 
-        let identifier = ObjectIdentifier(type)
-        if state.pointee.dictionaryType?.type == identifier {
-            return true
-        }
-        let checked = state.pointee.nonDictionaryTypes
-        if checked.0 == identifier || checked.1 == identifier || checked.2 == identifier || checked.3 == identifier {
-            return false
-        }
-
-        guard let dictionaryType = type as? any MessagePackEncodableDictionary.Type else {
-            switch state.pointee.nonDictionaryTypeCount & 3 {
-            case 0: state.pointee.nonDictionaryTypes.0 = identifier
-            case 1: state.pointee.nonDictionaryTypes.1 = identifier
-            case 2: state.pointee.nonDictionaryTypes.2 = identifier
-            default: state.pointee.nonDictionaryTypes.3 = identifier
-            }
-            state.pointee.nonDictionaryTypeCount &+= 1
-            return false
-        }
-        state.pointee.dictionaryType = (identifier, dictionaryType)
+        state.pointee.dictionaryType = dictionaryType
         return true
     }
 
@@ -418,7 +423,7 @@ struct MessagePackEncodingContext {
     /// last found, as a map whose keys are encoded like any other value.
     @inline(never)
     func encodeDictionary(_ value: UnsafeRawPointer, path: MessagePackEncodingPath) throws {
-        try state.pointee.dictionaryType.unsafelyUnwrapped.dictionaryType.encodeEntries(
+        try state.pointee.dictionaryType.unsafelyUnwrapped.encodeEntries(
             at: value, context: self, path: path)
     }
 

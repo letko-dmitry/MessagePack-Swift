@@ -221,10 +221,11 @@ struct MessagePackDecodingContext {
         /// The nodes of the coding paths in use; see ``MessagePackCodingPath``.
         var pathNodes: MessagePackStack<MessagePackCodingPath.Node>
 
-        /// The last `Array` type ``MessagePackDecoding/decodeArray(_:parser:context:path:)``
-        /// decoded, and the last other type it checked.
-        var arrayType: (type: ObjectIdentifier, arrayType: any MessagePackDecodableArray.Type)?
-        var nonArrayType: ObjectIdentifier?
+        /// The types ``MessagePackDecoding/decodeArray(_:parser:context:path:)``
+        /// checked; see ``arrayConformance(of:)``.
+        var arrayTypes: (ArrayType?, ArrayType?, ArrayType?, ArrayType?)
+        var arrayTypeCount = 0
+        typealias ArrayType = (type: ObjectIdentifier, conformance: (any MessagePackDecodableArray.Type)?)
     }
 
     /// The decoding state, in the frame of
@@ -696,7 +697,7 @@ enum MessagePackDecoding {
     /// the input cannot serve checks.
     @inline(never)
     static func isDictionary(_ type: Any.Type) -> Bool {
-        messagePackHasDictionaryWidth(type) && type is any MessagePackDecodableDictionary.Type
+        messagePackIsOneReferenceWide(type) && type is any MessagePackDecodableDictionary.Type
     }
 
     /// Guards against unbounded recursion through recursive `Decodable`
