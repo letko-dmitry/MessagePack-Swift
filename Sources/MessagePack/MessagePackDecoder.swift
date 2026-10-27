@@ -698,6 +698,16 @@ enum MessagePackDecoding {
     static func isDictionary(_ type: Any.Type) -> Bool {
         messagePackHasDictionaryWidth(type) && type is any MessagePackDecodableDictionary.Type
     }
+
+    /// Guards against unbounded recursion through recursive `Decodable`
+    /// types fed deeply nested hostile input. Every nesting level appends to
+    /// the coding path, so its depth tracks the container depth (mirroring
+    /// the serializer's `maxDepth` protection).
+    static func checkDepth(_ context: MessagePackDecodingContext, _ path: MessagePackCodingPath, offset: Int) throws {
+        guard context.depth(path) < maxDepth else {
+            throw corrupted(.depthLimitExceeded, context, path, offset: offset)
+        }
+    }
 }
 
 // MARK: - Decoder
@@ -715,32 +725,11 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
 
     var userInfo: [CodingUserInfoKey: Any] { context.userInfo }
 
-    /// Guards against unbounded recursion through recursive `Decodable`
-    /// types fed deeply nested hostile input. Every nesting level appends to
-    /// the coding path, so its depth tracks the container depth (mirroring
-    /// the serializer's `maxDepth` protection).
-    private func checkDepth() throws {
-        guard context.depth(path) < MessagePackDecoding.maxDepth else {
-            throw MessagePackDecoding.corrupted(.depthLimitExceeded, context, path, offset: offset)
-        }
-    }
-
     func container<Key: CodingKey>(keyedBy type: Key.Type) throws -> KeyedDecodingContainer<Key> {
-        try checkDepth()
+        try MessagePackDecoding.checkDepth(context, path, offset: offset)
         var parser = context.parser(at: offset)
-        let entryCount: Int?
-        do throws(MessagePackError) {
-            entryCount = try parser.readRawMapHeader()
-        } catch {
-            throw MessagePackDecoding.corrupted(error, context, path, offset: offset)
-        }
-        guard let entryCount else {
+        guard let entryCount = try readMapHeader(&parser) else {
             throw MessagePackDecoding.wrongType([String: Any].self, parser, context, path)
-        }
-        // Each entry needs at least two bytes; reject hostile counts before
-        // reserving storage.
-        guard entryCount <= (parser.count - parser.offset) / 2 else {
-            throw MessagePackDecoding.corrupted(.insufficientData, context, path, offset: offset)
         }
         let storage = context.reusableKeyedStorage()
         storage.reset(offset: offset, path: path, firstKeyOffset: parser.offset, entryCount: entryCount)
@@ -752,7 +741,7 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
-        try checkDepth()
+        try MessagePackDecoding.checkDepth(context, path, offset: offset)
         var parser = context.parser(at: offset)
         let elementCount: Int?
         do throws(MessagePackError) {
@@ -782,22 +771,31 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
 
     private func mapEntriesAsPairs() throws -> UnkeyedDecodingContainer {
         var parser = context.parser(at: offset)
+        guard let entryCount = try readMapHeader(&parser) else {
+            throw MessagePackDecoding.wrongType([Any].self, parser, context, path)
+        }
+        return MessagePackUnkeyedDecodingContainer(
+            context: context, path: path, elementCount: entryCount &* 2,
+            startOffset: offset, parser: parser)
+    }
+
+    /// The entry count of the map at the parser, or nil if the value there
+    /// is not a map.
+    @inline(__always)
+    private func readMapHeader(_ parser: inout MessagePackDecoding.Parser) throws -> Int? {
         let entryCount: Int?
         do throws(MessagePackError) {
             entryCount = try parser.readRawMapHeader()
         } catch {
             throw MessagePackDecoding.corrupted(error, context, path, offset: offset)
         }
-        guard let entryCount else {
-            throw MessagePackDecoding.wrongType([Any].self, parser, context, path)
-        }
-        // Each entry needs at least two bytes.
+        guard let entryCount else { return nil }
+        // Each entry needs at least two bytes; reject hostile counts before
+        // reserving storage.
         guard entryCount <= (parser.count - parser.offset) / 2 else {
             throw MessagePackDecoding.corrupted(.insufficientData, context, path, offset: offset)
         }
-        return MessagePackUnkeyedDecodingContainer(
-            context: context, path: path, elementCount: entryCount &* 2,
-            startOffset: offset, parser: parser)
+        return entryCount
     }
 
     func singleValueContainer() throws -> SingleValueDecodingContainer {

@@ -239,11 +239,8 @@ extension MessagePackDecoding {
         let pathNodeCount = state.pointee.pathNodes.count
         defer { state.pointee.pathNodes.removeAll(from: pathNodeCount) }
 
-        // The checks of `MessagePackDirectDecoder.unkeyedContainer()`.
         let path = path()
-        guard context.depth(path) < maxDepth else {
-            throw corrupted(.depthLimitExceeded, context, path, offset: parser.offset)
-        }
+        try checkDepth(context, path, offset: parser.offset)
         guard elementCount <= elements.count - elements.offset else {
             throw corrupted(.insufficientData, context, path, offset: parser.offset)
         }
