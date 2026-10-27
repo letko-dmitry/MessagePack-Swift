@@ -5,7 +5,7 @@ private let secondSingleValueMessage = """
     a single value encoding container
     """
 
-private let outOfOrderWriteMessage = """
+let outOfOrderWriteMessage = """
     Attempt to encode into a MessagePack container after writes to its parent \
     closed it. Nested containers and superEncoder() values must be fully \
     encoded before their parent container continues.

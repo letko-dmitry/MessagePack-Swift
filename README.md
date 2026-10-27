@@ -89,10 +89,22 @@ let deserialized: Foo = try MessagePackSerializer.deserialize(Foo.self, from: se
 
 - Structs are serialized as maps keyed by property name, in declaration
   order — byte-identical to what the `Codable` route produces for an
-  equivalent type, with one exception: a `nil` optional is written as an
+  equivalent type, with two exceptions. A `nil` optional is written as an
   explicit MessagePack nil, where `Codable` synthesis (`encodeIfPresent`)
-  omits the key. Either route decodes the other's output correctly, so they
-  still interoperate freely.
+  omits the key; either route decodes the other's output. And a dictionary
+  is written as a map whose keys are encoded like any other value, which
+  `Codable` writes only with
+  `MessagePackEncoder(dictionaryEncodingStrategy: .convertToMap)`:
+
+  | Dictionary key | macro | `Codable` (default) | `Codable` (`.convertToMap`) |
+  |---|---|---|---|
+  | `String` | map, string keys | the same | the same |
+  | `Int` | map, integer keys | map, string keys (`"1"`) | map, integer keys |
+  | other (`Int8`, `Double`, `Bool`, enums, structs, …) | map, keys as values | array of keys and values in turn | map, keys as values |
+
+  `MessagePackDecoder` reads all three forms; the macro route reads the
+  maps whose keys are of the dictionary's key type, so not the default
+  `Codable` output for keys other than `String`.
 - Decoding accepts fields in any order, skips unknown keys, throws
   `MessagePackError.missingField` for absent required fields, and uses the
   property's default value (or `nil` for optionals) when a field is absent.
@@ -168,6 +180,14 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
 
 - Keyed containers become maps with string keys; maps with integer wire keys
   can be decoded through `CodingKey.intValue`.
+- Dictionaries go through `Dictionary`'s own `Codable` conformance by
+  default, as in earlier versions: string keys for `String`, `Int`, and
+  `CodingKeyRepresentable` keys, and an array of keys and values in turn for
+  any other key type. `MessagePackEncoder(dictionaryEncodingStrategy:
+  .convertToMap)` writes every dictionary as a map whose keys are encoded
+  like any other value, byte for byte what the macro route writes (`[1: "a"]`
+  has the integer key 1). The decoder reads both forms for every key type;
+  versions before the option read the map only for `String` and `Int` keys.
 - `Date` ↔ the spec's timestamp extension (ext type -1), `Data` ↔ bin
   8/16/32, and `MessagePackTimestamp` ↔ ext type -1. Dates that cannot be
   represented as a timestamp (non-finite, out of `Int64` seconds range)
@@ -196,9 +216,11 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
   `.convertFromString`, `.convertFromInteger`, and `.convertFromFloat`.
   Versions before the option cannot read the string.
 - Duplicate map keys, which the spec leaves to implementations: the value
-  tree and the macro route keep the last entry, while `Codable` (structs and
-  dictionaries alike) looks each key up from the previous match onwards, so
-  which entry a value gets depends on the order of the keys.
+  tree and the macro route keep the last entry, while `Codable` (structs,
+  and dictionaries with `String`, `Int`, and `CodingKeyRepresentable` keys)
+  looks each key up from the previous match onwards, so which entry a value
+  gets depends on the order of the keys. A dictionary with keys of another
+  type read from a map keeps the last entry.
 - Encoder output is byte-identical to `MessagePackSerializer.serialize` of
   the equivalent value tree (smallest headers everywhere).
 - Both coders are `Sendable` (unchecked, value-semantic — like
@@ -315,4 +337,4 @@ Deserialization of a flat scalar array performs 1 allocation (the result array);
 swift test
 ```
 
-255 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
+262 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).

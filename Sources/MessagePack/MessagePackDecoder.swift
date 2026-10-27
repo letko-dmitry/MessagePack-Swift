@@ -205,6 +205,12 @@ struct MessagePackDecodingContext {
         var decodingOffset = -1
         var decodingStorage: MessagePackKeyedStorage?
 
+        /// The type of the value at `decodingOffset`, saved and restored with
+        /// it: a dictionary whose own conformance reads keys and values in
+        /// turn reads a map's entries as them; see
+        /// ``MessagePackDirectDecoder/unkeyedContainer()``.
+        var decodingType: Any.Type?
+
         /// Recycled keyed-container storages. Decoding a homogeneous array
         /// of structs otherwise allocates a fresh storage object plus its
         /// entry array per element; reuse eliminates both, and
@@ -655,11 +661,14 @@ enum MessagePackDecoding {
         let decoder = MessagePackDirectDecoder(context: context, offset: startOffset, path: path)
 
         let outerOffset = state.pointee.decodingOffset
+        let outerType = state.pointee.decodingType
         let outerStorage = state.pointee.decodingStorage
         state.pointee.decodingOffset = startOffset
+        state.pointee.decodingType = type
         state.pointee.decodingStorage = nil
         defer {
             state.pointee.decodingOffset = outerOffset
+            state.pointee.decodingType = outerType
             state.pointee.decodingStorage = outerStorage
         }
 
@@ -678,6 +687,21 @@ enum MessagePackDecoding {
         }
 
         return value
+    }
+
+    /// Whether `type` is a dictionary keyed by a type other than `String`,
+    /// `Int`, and `CodingKeyRepresentable` ones, which its own conformance
+    /// decodes from an array of keys and values in turn. Out of line: only a
+    /// request for an unkeyed container that the input cannot serve checks.
+    /// Only a value as wide as a dictionary, one reference, can be one, so
+    /// other types skip the conformance check.
+    @inline(never)
+    static func decodesFromPairs(_ type: Any.Type) -> Bool {
+        func size<T>(of _: T.Type) -> Int { MemoryLayout<T>.size }
+        guard size(of: type) == MemoryLayout<[Int: Int]>.size,
+            let dictionaryType = type as? any MessagePackDecodableDictionary.Type
+        else { return false }
+        return dictionaryType.decodesFromPairs
     }
 }
 
@@ -743,6 +767,15 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
             throw MessagePackDecoding.corrupted(error, context, path, offset: offset)
         }
         guard let elementCount else {
+            // A dictionary that its own conformance decodes from keys and
+            // values in turn, asking for them on a map, as `.convertToMap`
+            // and the macro route write it: the map's entries are those.
+            if context.state.pointee.decodingOffset == offset,
+                let type = context.state.pointee.decodingType,
+                MessagePackDecoding.decodesFromPairs(type)
+            {
+                return try mapEntriesAsPairs()
+            }
             throw MessagePackDecoding.wrongType([Any].self, parser, context, path)
         }
         guard elementCount <= parser.count - parser.offset else {
@@ -750,6 +783,29 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
         }
         return MessagePackUnkeyedDecodingContainer(
             context: context, path: path, elementCount: elementCount,
+            startOffset: offset, parser: parser)
+    }
+
+    /// The map at `offset` as its keys and values in turn, which a
+    /// dictionary's own conformance reads for a key type it decodes from
+    /// pairs: on the wire, a map's entries are those values in that order.
+    private func mapEntriesAsPairs() throws -> UnkeyedDecodingContainer {
+        var parser = context.parser(at: offset)
+        let entryCount: Int?
+        do throws(MessagePackError) {
+            entryCount = try parser.readRawMapHeader()
+        } catch {
+            throw MessagePackDecoding.corrupted(error, context, path, offset: offset)
+        }
+        guard let entryCount else {
+            throw MessagePackDecoding.wrongType([Any].self, parser, context, path)
+        }
+        // Each entry needs at least two bytes.
+        guard entryCount <= (parser.count - parser.offset) / 2 else {
+            throw MessagePackDecoding.corrupted(.insufficientData, context, path, offset: offset)
+        }
+        return MessagePackUnkeyedDecodingContainer(
+            context: context, path: path, elementCount: entryCount &* 2,
             startOffset: offset, parser: parser)
     }
 

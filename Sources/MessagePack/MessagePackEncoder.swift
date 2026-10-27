@@ -21,6 +21,10 @@ import Foundation
 ///   ``decimalEncodingStrategy`` set to
 ///   ``DecimalEncodingStrategy/convertToString``, as a string of its exact
 ///   decimal digits such as `"0.35"`.
+/// - `Dictionary` is encoded through its own `Codable` conformance, or, with
+///   ``dictionaryEncodingStrategy`` set to
+///   ``DictionaryEncodingStrategy/convertToMap``, as a map whose keys are
+///   encoded like any other value.
 ///
 /// Keyed containers are encoded as maps with string keys. Because encoding is
 /// streaming, writes must be well nested: a nested container (or an encoder
@@ -54,6 +58,22 @@ public struct MessagePackEncoder {
         case convertToString
     }
 
+    /// How dictionaries are written, named like `JSONEncoder`'s strategies.
+    public enum DictionaryEncodingStrategy: Sendable {
+        /// Defers to `Dictionary`'s own `Codable` conformance: a map with
+        /// string keys for `String`, `Int`, and `CodingKeyRepresentable`
+        /// keys (the key 1 is written as `"1"`), and an array of keys and
+        /// values in turn for any other key type. The default, and what
+        /// earlier versions wrote.
+        case deferredToDictionary
+        /// Converts every dictionary to a map whose keys are encoded like any
+        /// other value, byte for byte what `@MessagePackSerializable` writes:
+        /// the key 1 is the integer 1. ``MessagePackDecoder`` reads both
+        /// forms; versions before this option read only maps with `String`
+        /// and `Int` keys.
+        case convertToMap
+    }
+
     /// Contextual information made available to the `Encodable` types via
     /// `Encoder.userInfo`.
     public var userInfo = [CodingUserInfoKey: Any]()
@@ -61,8 +81,15 @@ public struct MessagePackEncoder {
     /// How `Decimal` values are written.
     public var decimalEncodingStrategy: DecimalEncodingStrategy
 
-    public init(decimalEncodingStrategy: DecimalEncodingStrategy = .deferredToDecimal) {
+    /// How dictionaries are written.
+    public var dictionaryEncodingStrategy: DictionaryEncodingStrategy
+
+    public init(
+        decimalEncodingStrategy: DecimalEncodingStrategy = .deferredToDecimal,
+        dictionaryEncodingStrategy: DictionaryEncodingStrategy = .deferredToDictionary
+    ) {
         self.decimalEncodingStrategy = decimalEncodingStrategy
+        self.dictionaryEncodingStrategy = dictionaryEncodingStrategy
     }
 
     /// Encodes `value` into MessagePack binary data.
@@ -71,7 +98,11 @@ public struct MessagePackEncoder {
     /// encodes nothing, since MessagePack has no representation for "no
     /// value".
     public func encode<T: Encodable>(_ value: T) throws -> Data {
-        try MessagePackEncodingState.with(userInfo: userInfo, decimalEncodingStrategy: decimalEncodingStrategy) { state in
+        try MessagePackEncodingState.with(
+            userInfo: userInfo,
+            decimalEncodingStrategy: decimalEncodingStrategy,
+            dictionaryEncodingStrategy: dictionaryEncodingStrategy
+        ) { state in
             let context = MessagePackEncodingContext(state: state)
             do {
                 try context.encodeValue(value, path: .root)
@@ -95,6 +126,7 @@ extension MessagePackEncoder: @unchecked Sendable {}
 struct MessagePackEncodingState {
     let userInfo: [CodingUserInfoKey: Any]
     let decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy
+    let dictionaryEncodingStrategy: MessagePackEncoder.DictionaryEncodingStrategy
 
     var buffer: MessagePackScratchBuffer
 
@@ -106,6 +138,14 @@ struct MessagePackEncodingState {
 
     /// The nodes of the coding paths in use; see ``MessagePackEncodingPath``.
     var pathNodes: MessagePackStack<MessagePackEncodingPath.Node>
+
+    /// The last `Dictionary` type ``MessagePackEncodingContext/encodeDictionary(_:path:)``
+    /// wrote, and the last four other types checked, replaced in turn: a
+    /// struct often has fields of two or three such types, such as an array
+    /// and a wrapper of one value, which a single one would alternate.
+    var dictionaryType: (type: ObjectIdentifier, dictionaryType: any MessagePackEncodableDictionary.Type)?
+    var nonDictionaryTypes: (ObjectIdentifier?, ObjectIdentifier?, ObjectIdentifier?, ObjectIdentifier?)
+    var nonDictionaryTypeCount = 0
 
     /// Registers one new entry in the container at `position`, closing any
     /// nested containers opened after it. Returns false if that container
@@ -127,6 +167,7 @@ struct MessagePackEncodingState {
     static func with<R>(
         userInfo: [CodingUserInfoKey: Any],
         decimalEncodingStrategy: MessagePackEncoder.DecimalEncodingStrategy,
+        dictionaryEncodingStrategy: MessagePackEncoder.DictionaryEncodingStrategy,
         _ body: (UnsafeMutablePointer<MessagePackEncodingState>) throws -> R
     ) rethrows -> R {
         try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) { output in
@@ -135,6 +176,7 @@ struct MessagePackEncodingState {
                     var state = MessagePackEncodingState(
                         userInfo: userInfo,
                         decimalEncodingStrategy: decimalEncodingStrategy,
+                        dictionaryEncodingStrategy: dictionaryEncodingStrategy,
                         buffer: MessagePackScratchBuffer(memory: output),
                         openContainers: MessagePackStack(memory: openContainers),
                         pathNodes: MessagePackStack(memory: pathNodes)
@@ -246,6 +288,11 @@ struct MessagePackEncodingContext {
             defer { state.pointee.pathNodes.removeAll(from: pathNodeCount) }
 
             try encodeWithContainers(value, path: path())
+        case .dictionary:
+            let pathNodeCount = state.pointee.pathNodes.count
+            defer { state.pointee.pathNodes.removeAll(from: pathNodeCount) }
+
+            try withUnsafePointer(to: value) { try encodeDictionary(UnsafeRawPointer($0), path: path()) }
         case .unrepresentableDate:
             throw Self.unrepresentableDate(value, codingPath: codingPath(path()))
         }
@@ -257,6 +304,10 @@ struct MessagePackEncodingContext {
         /// The type is not natively represented, or is a `Decimal` deferring
         /// to its own conformance.
         case notNative
+        /// A `Dictionary`, for
+        /// ``MessagePackEncoder/DictionaryEncodingStrategy/convertToMap``;
+        /// see ``encodeDictionary(_:path:)``.
+        case dictionary
         /// A `Date` outside the timestamp range.
         case unrepresentableDate
     }
@@ -272,9 +323,9 @@ struct MessagePackEncodingContext {
     /// conditional cast to a protocol costs `swift_conformsToProtocol`, more
     /// than this whole chain of comparisons.
     @inline(never)
-    func encodeNative(_ type: Any.Type, _ value: UnsafeRawPointer) -> NativeEncoding {
+    func encodeNative(_ metatype: Any.Type, _ value: UnsafeRawPointer) -> NativeEncoding {
         let foundation = MessagePackFoundationTypes.shared
-        let type = ObjectIdentifier(type)
+        let type = ObjectIdentifier(metatype)
 
         // The types seen most in generic contexts first: every struct passes
         // all of these checks before its own conformance runs.
@@ -318,11 +369,61 @@ struct MessagePackEncodingContext {
             encodeCollection(collectionType, value)
         } else if type == foundation.decimal, decimalEncodingStrategy == .convertToString {
             encodeDecimal(value)
+        } else if state.pointee.dictionaryEncodingStrategy == .convertToMap, isDictionary(metatype) {
+            return .dictionary
         } else {
             return .notNative
         }
 
         return .encoded
+    }
+
+    /// Whether `type` is a `Dictionary`, which
+    /// ``MessagePackEncoder/DictionaryEncodingStrategy/convertToMap`` writes
+    /// as a map; remembers it for ``encodeDictionary(_:path:)``.
+    ///
+    /// The types checked are remembered, much as
+    /// ``MessagePackDecoding/decodeArray(_:parser:context:path:)`` does: a
+    /// failed conformance check costs about 700 instructions. Only a value
+    /// as wide as a dictionary, one reference, can be one, so other structs
+    /// skip both.
+    @inline(never)
+    private func isDictionary(_ type: Any.Type) -> Bool {
+        guard Self.size(of: type) == MemoryLayout<[Int: Int]>.size else { return false }
+
+        let identifier = ObjectIdentifier(type)
+        if state.pointee.dictionaryType?.type == identifier {
+            return true
+        }
+        let checked = state.pointee.nonDictionaryTypes
+        if checked.0 == identifier || checked.1 == identifier || checked.2 == identifier || checked.3 == identifier {
+            return false
+        }
+
+        guard let dictionaryType = type as? any MessagePackEncodableDictionary.Type else {
+            switch state.pointee.nonDictionaryTypeCount & 3 {
+            case 0: state.pointee.nonDictionaryTypes.0 = identifier
+            case 1: state.pointee.nonDictionaryTypes.1 = identifier
+            case 2: state.pointee.nonDictionaryTypes.2 = identifier
+            default: state.pointee.nonDictionaryTypes.3 = identifier
+            }
+            state.pointee.nonDictionaryTypeCount &+= 1
+            return false
+        }
+        state.pointee.dictionaryType = (identifier, dictionaryType)
+        return true
+    }
+
+    private static func size<T>(of _: T.Type) -> Int {
+        MemoryLayout<T>.size
+    }
+
+    /// Writes the dictionary at `value`, of the type ``isDictionary(_:)``
+    /// last found, as a map whose keys are encoded like any other value.
+    @inline(never)
+    func encodeDictionary(_ value: UnsafeRawPointer, path: MessagePackEncodingPath) throws {
+        try state.pointee.dictionaryType.unsafelyUnwrapped.dictionaryType.encodeEntries(
+            at: value, context: self, path: path)
     }
 
     // `Date` and `Decimal` are written out of line, keeping these resilient

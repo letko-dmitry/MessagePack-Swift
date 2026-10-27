@@ -145,6 +145,25 @@ extension MessagePackDecoding {
     }
 }
 
+// MARK: - Dictionaries from maps
+
+/// A dictionary whose own `Decodable` conformance reads an array of keys and
+/// values in turn rather than a map. Decoded from a map, as
+/// ``MessagePackEncoder/DictionaryEncodingStrategy/convertToMap`` and
+/// `@MessagePackSerializable` write it, it reads the map's entries as those
+/// pairs; see ``MessagePackDirectDecoder/unkeyedContainer()``.
+protocol MessagePackDecodableDictionary {
+    static var decodesFromPairs: Bool { get }
+}
+
+extension Dictionary: MessagePackDecodableDictionary where Key: Decodable, Value: Decodable {
+    /// The checks of `Dictionary.init(from:)`: every key type but `String`,
+    /// `Int`, and `CodingKeyRepresentable` ones decodes from pairs.
+    static var decodesFromPairs: Bool {
+        Key.self != String.self && Key.self != Int.self && !(Key.self is any CodingKeyRepresentable.Type)
+    }
+}
+
 // MARK: - Arrays of any element
 
 /// An array of `Decodable` elements, which the decoder reads with a loop of

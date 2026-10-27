@@ -103,3 +103,48 @@ extension MessagePackEncodingContext {
         }
     }
 }
+
+// MARK: - Dictionaries as maps
+
+/// A dictionary that ``MessagePackEncoder/DictionaryEncodingStrategy/convertToMap``
+/// writes as a map whose keys are encoded like any other value.
+protocol MessagePackEncodableDictionary {
+    /// Writes the dictionary at `dictionary` as a map.
+    static func encodeEntries(
+        at dictionary: UnsafeRawPointer, context: MessagePackEncodingContext, path: MessagePackEncodingPath
+    ) throws
+}
+
+extension Dictionary: MessagePackEncodableDictionary where Key: Encodable, Value: Encodable {
+    static func encodeEntries(
+        at dictionary: UnsafeRawPointer, context: MessagePackEncodingContext, path: MessagePackEncodingPath
+    ) throws {
+        // Counted (and widened) in place like a keyed container's header,
+        // and open like one, so a misplaced write by a nested value traps.
+        let position = context.beginContainer(isMap: true)
+        var index = 0
+        for (key, value) in dictionary.assumingMemoryBound(to: Self.self).pointee {
+            precondition(context.state.pointee.beginEntry(at: position), outOfOrderWriteMessage)
+            try context.encodeValue(key, path: context.path(path, appending: codingKey(key, at: index)))
+            try context.encodeValue(value, path: context.path(path, appending: codingKey(key, at: index)))
+            index &+= 1
+        }
+        context.closeContainers(from: position)
+    }
+
+    /// The coding key of an entry: the key itself for `String` and `Int`
+    /// keys, as `Dictionary`'s own conformance names them, and the entry's
+    /// position for any other key type.
+    private static func codingKey(_ key: Key, at index: Int) -> MessagePackCodingKey {
+        withUnsafePointer(to: key) { key in
+            let key = UnsafeRawPointer(key)
+            if Key.self == String.self {
+                return MessagePackCodingKey(stringValue: key.assumingMemoryBound(to: String.self).pointee)!
+            }
+            if Key.self == Int.self {
+                return MessagePackCodingKey(dictionaryKey: key.load(as: Int.self))
+            }
+            return MessagePackCodingKey(index: index)
+        }
+    }
+}
