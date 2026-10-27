@@ -121,7 +121,7 @@ extension Dictionary: MessagePackEncodableDictionary where Key: Encodable, Value
         let position = context.beginContainer(isMap: true)
         var index = 0
         for (key, value) in dictionary.assumingMemoryBound(to: Self.self).pointee {
-            precondition(context.state.pointee.beginEntry(at: position), outOfOrderWriteMessage)
+            context.beginEntry(at: position)
             try context.encodeValue(key, path: context.path(path, appending: codingKey(key, at: index)))
             try context.encodeValue(value, path: context.path(path, appending: codingKey(key, at: index)))
             index &+= 1

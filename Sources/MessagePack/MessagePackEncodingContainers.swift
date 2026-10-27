@@ -5,11 +5,23 @@ private let secondSingleValueMessage = """
     a single value encoding container
     """
 
-let outOfOrderWriteMessage = """
+private let outOfOrderWriteMessage = """
     Attempt to encode into a MessagePack container after writes to its parent \
     closed it. Nested containers and superEncoder() values must be fully \
     encoded before their parent container continues.
     """
+
+extension MessagePackEncodingContext {
+    /// Registers one new entry in the container at `position`, trapping if a
+    /// write to its parent has closed it. Not in a `precondition`, whose
+    /// condition `-Ounchecked` does not evaluate.
+    @inline(__always)
+    func beginEntry(at position: Int) {
+        if !state.pointee.beginEntry(at: position) {
+            preconditionFailure(outOfOrderWriteMessage)
+        }
+    }
+}
 
 // MARK: - Deferred (super) encoder
 
@@ -42,8 +54,7 @@ final class MessagePackDeferredEncoder: Encoder {
     /// Writes the deferred entry (exactly once) and returns the direct encoder.
     func activate() -> MessagePackDirectEncoder {
         if let inner { return inner }
-        precondition(
-            context.state.pointee.beginEntry(at: parentPosition), outOfOrderWriteMessage)
+        context.beginEntry(at: parentPosition)
         if let key { context.state.pointee.buffer.writeString(key) }
         let encoder = MessagePackDirectEncoder(context: context, path: path, start: context.state.pointee.buffer.offset)
         inner = encoder
@@ -135,7 +146,7 @@ struct MessagePackKeyedEncodingContainer<Key: CodingKey>: KeyedEncodingContainer
     /// Bumps the entry count and writes the key. The value must follow.
     @inline(__always)
     private func beginEntry(_ key: Key) {
-        precondition(context.state.pointee.beginEntry(at: headerPosition), outOfOrderWriteMessage)
+        context.beginEntry(at: headerPosition)
         context.state.pointee.buffer.writeString(key.stringValue)
     }
 
@@ -259,7 +270,7 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
 
     @inline(__always)
     private func beginElement() {
-        precondition(context.state.pointee.beginEntry(at: headerPosition), outOfOrderWriteMessage)
+        context.beginEntry(at: headerPosition)
     }
 
     mutating func encodeNil() throws {
