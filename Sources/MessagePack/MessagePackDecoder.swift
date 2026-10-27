@@ -690,18 +690,13 @@ enum MessagePackDecoding {
         return value
     }
 
-    /// Whether `type` is a dictionary keyed by a type other than `String`,
-    /// `Int`, and `CodingKeyRepresentable` ones, which its own conformance
-    /// decodes from an array of keys and values in turn. Out of line: only a
-    /// request for an unkeyed container that the input cannot serve checks.
-    /// Only a value as wide as a dictionary, one reference, can be one, so
-    /// other types skip the conformance check.
+    /// Whether `type` is a `Dictionary`, whose own conformance asks for an
+    /// unkeyed container only for a key type it decodes from keys and values
+    /// in turn. Out of line: only a request for an unkeyed container that
+    /// the input cannot serve checks.
     @inline(never)
-    static func decodesFromPairs(_ type: Any.Type) -> Bool {
-        guard messagePackHasDictionaryWidth(type),
-            let dictionaryType = type as? any MessagePackDecodableDictionary.Type
-        else { return false }
-        return dictionaryType.decodesFromPairs
+    static func isDictionary(_ type: Any.Type) -> Bool {
+        messagePackHasDictionaryWidth(type) && type is any MessagePackDecodableDictionary.Type
     }
 }
 
@@ -771,7 +766,7 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
             // and the macro route write it: the map's entries are those.
             if context.state.pointee.decodingOffset == offset,
                 let type = context.state.pointee.decodingType,
-                MessagePackDecoding.decodesFromPairs(type)
+                MessagePackDecoding.isDictionary(type)
             {
                 return try mapEntriesAsPairs()
             }

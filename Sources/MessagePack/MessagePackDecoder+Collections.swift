@@ -147,17 +147,9 @@ extension MessagePackDecoding {
 
 // MARK: - Dictionaries from maps
 
-protocol MessagePackDecodableDictionary {
-    static var decodesFromPairs: Bool { get }
-}
+protocol MessagePackDecodableDictionary {}
 
-extension Dictionary: MessagePackDecodableDictionary where Key: Decodable, Value: Decodable {
-    /// The checks of `Dictionary.init(from:)`: every key type but `String`,
-    /// `Int`, and `CodingKeyRepresentable` ones decodes from pairs.
-    static var decodesFromPairs: Bool {
-        Key.self != String.self && Key.self != Int.self && !(Key.self is any CodingKeyRepresentable.Type)
-    }
-}
+extension Dictionary: MessagePackDecodableDictionary where Key: Decodable, Value: Decodable {}
 
 // MARK: - Arrays of any element
 
