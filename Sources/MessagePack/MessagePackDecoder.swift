@@ -183,7 +183,7 @@ struct MessagePackDecodingContext {
             }
         }
 
-        let storage = MessagePackKeyedStorage.make()
+        let storage = MessagePackKeyedStorage.make(context: self)
         let poolLimit = 8
         if state.pointee.storagePool.count < poolLimit {
             state.pointee.storagePool.append(storage)
@@ -627,14 +627,12 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
             throw MessagePackDecoding.corrupted(.insufficientData, context, path, offset: offset)
         }
         let storage = context.reusableKeyedStorage()
-        storage.reset(firstKeyOffset: parser.offset, entryCount: entryCount)
+        storage.reset(offset: offset, path: path, firstKeyOffset: parser.offset, entryCount: entryCount)
         if context.state.pointee.decodingOffset == offset {
             context.state.pointee.decodingStorage = storage
         }
 
-        return KeyedDecodingContainer(
-            MessagePackKeyedDecodingContainer<Key>(
-                context: context, storage: storage, offset: offset, path: path))
+        return KeyedDecodingContainer(MessagePackKeyedDecodingContainer<Key>(storage: storage))
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {

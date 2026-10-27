@@ -12,7 +12,9 @@ import Foundation
 /// A class so it can be recycled across the containers of one `decode`
 /// call through ``MessagePackDecodingContext/reusableKeyedStorage()`` (so
 /// `reset` must leave no state behind from a previous use) and referred to
-/// from the context while its value is being decoded.
+/// from the context while its value is being decoded. It also holds what
+/// the container decoding its map needs, so that container is a single
+/// reference.
 final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State, Void> {
     struct Entry {
         let keyOffset: Int
@@ -33,6 +35,11 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
         /// The entry of the last key match, where the next lookup starts.
         var searchIndex = 0
         var firstKeyOffset = 0
+
+        let context: MessagePackDecodingContext
+        /// The byte offset of the map, where errors about the map point.
+        var offset = 0
+        var path = MessagePackCodingPath.root
     }
 
     /// The state lives in the buffer's header, allocated with the object
@@ -43,9 +50,13 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
         withUnsafeMutablePointerToHeader { $0 }
     }
 
-    static func make() -> MessagePackKeyedStorage {
-        unsafeDowncast(create(minimumCapacity: 0) { _ in State() }, to: MessagePackKeyedStorage.self)
+    static func make(context: MessagePackDecodingContext) -> MessagePackKeyedStorage {
+        unsafeDowncast(create(minimumCapacity: 0) { _ in State(context: context) }, to: MessagePackKeyedStorage.self)
     }
+
+    var context: MessagePackDecodingContext { state.pointee.context }
+    var offset: Int { state.pointee.offset }
+    var path: MessagePackCodingPath { state.pointee.path }
 
     var entryCount: Int { state.pointee.entryCount }
     var scannedCount: Int { state.pointee.entries.count }
@@ -59,7 +70,9 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
         state.pointee.entries[index]
     }
 
-    func reset(firstKeyOffset: Int, entryCount: Int) {
+    func reset(offset: Int, path: MessagePackCodingPath, firstKeyOffset: Int, entryCount: Int) {
+        state.pointee.offset = offset
+        state.pointee.path = path
         state.pointee.firstKeyOffset = firstKeyOffset
         state.pointee.entryCount = entryCount
         state.pointee.searchIndex = 0
@@ -154,23 +167,21 @@ private enum MessagePackKeyLookup {
     case failed(MessagePackError)
 }
 
-final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
-    let context: MessagePackDecodingContext
+/// A struct holding only its storage, which keeps everything else it needs:
+/// `KeyedDecodingContainer` stores it inline in the box it allocates, and
+/// copies it out for every call at the cost of one retain, as it would a
+/// class instance, which takes an allocation more per container. Holding
+/// its context, offset and path as well, it cost more per call than that
+/// allocation saves, for structs with a dozen fields or more.
+struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
     let storage: MessagePackKeyedStorage
+
+    var context: MessagePackDecodingContext { storage.context }
     /// The byte offset of the map, where errors about the map point.
-    let offset: Int
-    let path: MessagePackCodingPath
+    var offset: Int { storage.offset }
+    var path: MessagePackCodingPath { storage.path }
 
     var codingPath: [CodingKey] { context.codingPath(path) }
-
-    init(
-        context: MessagePackDecodingContext, storage: MessagePackKeyedStorage, offset: Int, path: MessagePackCodingPath
-    ) {
-        self.context = context
-        self.storage = storage
-        self.offset = offset
-        self.path = path
-    }
 
     var allKeys: [Key] {
         // A map that fails to scan lists the keys before the failure; the
