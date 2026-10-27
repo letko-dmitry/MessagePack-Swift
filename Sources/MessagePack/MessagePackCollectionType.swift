@@ -66,3 +66,11 @@ enum MessagePackCollectionType {
         let boolDictionary = ObjectIdentifier([String: Bool].self)
     }
 }
+
+/// Whether a value of `type` is as wide as a dictionary, one reference: other
+/// types skip the conformance checks for one.
+@inline(__always)
+func messagePackHasDictionaryWidth(_ type: Any.Type) -> Bool {
+    func size<T>(of _: T.Type) -> Int { MemoryLayout<T>.size }
+    return size(of: type) == MemoryLayout<[Int: Int]>.size
+}

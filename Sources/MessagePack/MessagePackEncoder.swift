@@ -389,7 +389,7 @@ struct MessagePackEncodingContext {
     /// skip both.
     @inline(never)
     private func isDictionary(_ type: Any.Type) -> Bool {
-        guard Self.size(of: type) == MemoryLayout<[Int: Int]>.size else { return false }
+        guard messagePackHasDictionaryWidth(type) else { return false }
 
         let identifier = ObjectIdentifier(type)
         if state.pointee.dictionaryType?.type == identifier {
@@ -412,10 +412,6 @@ struct MessagePackEncodingContext {
         }
         state.pointee.dictionaryType = (identifier, dictionaryType)
         return true
-    }
-
-    private static func size<T>(of _: T.Type) -> Int {
-        MemoryLayout<T>.size
     }
 
     /// Writes the dictionary at `value`, of the type ``isDictionary(_:)``

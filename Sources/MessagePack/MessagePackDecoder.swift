@@ -698,8 +698,7 @@ enum MessagePackDecoding {
     /// other types skip the conformance check.
     @inline(never)
     static func decodesFromPairs(_ type: Any.Type) -> Bool {
-        func size<T>(of _: T.Type) -> Int { MemoryLayout<T>.size }
-        guard size(of: type) == MemoryLayout<[Int: Int]>.size,
+        guard messagePackHasDictionaryWidth(type),
             let dictionaryType = type as? any MessagePackDecodableDictionary.Type
         else { return false }
         return dictionaryType.decodesFromPairs
