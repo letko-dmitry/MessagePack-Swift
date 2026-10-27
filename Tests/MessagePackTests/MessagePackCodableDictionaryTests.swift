@@ -86,7 +86,7 @@ struct CodableDictionaryStrategyTests {
     @Test func otherTypesStillRejectMaps() throws {
         let map = try mapEncoder.encode([Int8(1): 2])
         #expect {
-            try MessagePackDecoder().decode([Point].self, from: map)
+            try MessagePackDecoder().decode([Rank].self, from: map)
         } throws: { error in
             if case DecodingError.typeMismatch = error { true } else { false }
         }
