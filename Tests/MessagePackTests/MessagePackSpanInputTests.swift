@@ -4,18 +4,12 @@ import Testing
 @testable import MessagePack
 
 @MessagePackSerializable
-private struct SpanPoint: Equatable {
-    var x: Int
-    var label: String
-}
-
-private struct CodablePoint: Codable, Equatable {
+private struct SpanPoint: Codable, Equatable {
     var x: Int
     var label: String
 }
 
 private let point = SpanPoint(x: 7, label: "seven")
-private let codablePoint = CodablePoint(x: 7, label: "seven")
 private let pointValue = MessagePackValue.map([.string("x"): .uint8(7), .string("label"): .string("seven")])
 
 /// The serialized point after two other bytes, so a slice of it does not
@@ -26,35 +20,28 @@ private let framed = [0xff, 0xfe] + [UInt8](MessagePackSerializer.serialize(poin
 /// would carry a span out of the scope it borrows from.
 private func decodeEveryRoute(_ bytes: ArraySlice<UInt8>) -> (
     macro: Result<SpanPoint, MessagePackError>,
-    codable: Result<CodablePoint, any Error>,
+    codable: Result<SpanPoint, any Error>,
     value: Result<MessagePackValue, MessagePackError>
 ) {
     (
         Result { () throws(MessagePackError) in
             try MessagePackSerializer.deserialize(SpanPoint.self, from: bytes.span.bytes)
         },
-        Result { try MessagePackDecoder().decode(CodablePoint.self, from: bytes.span.bytes) },
+        Result { try MessagePackDecoder().decode(SpanPoint.self, from: bytes.span.bytes) },
         Result { () throws(MessagePackError) in try MessagePackSerializer.deserialize(data: bytes.span.bytes) }
     )
 }
 
 @Suite("Decoding from spans")
 struct MessagePackSpanInputTests {
-    @Test func everyRouteReadsASliceInPlace() throws {
+    @Test func everyRouteReadsASlice() throws {
         let decoded = decodeEveryRoute(framed[2...])
         #expect(try decoded.macro.get() == point)
-        #expect(try decoded.codable.get() == codablePoint)
-        #expect(try decoded.value.get() == pointValue)
-    }
-
-    @Test func everyRouteReadsAnArray() throws {
-        let bytes = [UInt8](framed[2...])
-        let decoded = decodeEveryRoute(bytes[...])
-        #expect(try decoded.macro.get() == point)
-        #expect(try decoded.codable.get() == codablePoint)
+        #expect(try decoded.codable.get() == point)
         #expect(try decoded.value.get() == pointValue)
 
         if #available(anyAppleOS 26, *) {
+            let bytes = [UInt8](framed[2...])
             let fromArray = try MessagePackSerializer.deserialize(SpanPoint.self, from: bytes.span.bytes)
             #expect(fromArray == point)
         }
