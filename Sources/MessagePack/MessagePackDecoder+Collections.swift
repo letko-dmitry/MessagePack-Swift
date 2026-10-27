@@ -144,3 +144,119 @@ extension MessagePackDecoding {
         return result
     }
 }
+
+// MARK: - Arrays of any element
+
+/// An array of `Decodable` elements, which the decoder reads with a loop of
+/// its own rather than `Array.init(from:)`. That runs as generic code for an
+/// element type of the client's, where every append calls into the runtime
+/// for the array's metadata, and it reads each element through an unkeyed
+/// container boxed in an existential.
+protocol MessagePackDecodableArray {
+    /// Decodes `count` elements into an array initialized at `result`.
+    static func decodeElements(
+        count: Int, parser: inout MessagePackDecoding.Parser, context: MessagePackDecodingContext,
+        path: MessagePackCodingPath, into result: UnsafeMutableRawPointer
+    ) throws
+}
+
+extension Array: MessagePackDecodableArray where Element: Decodable {
+    static func decodeElements(
+        count: Int, parser: inout MessagePackDecoding.Parser, context: MessagePackDecodingContext,
+        path: MessagePackCodingPath, into result: UnsafeMutableRawPointer
+    ) throws {
+        // Through a buffer pointer: an `OutputSpan`, generic over a type
+        // known only at run time, looked up its own metadata for every
+        // element it appended.
+        let array = try [Element](unsafeUninitializedCapacity: count) { elements, initializedCount in
+            while initializedCount < count {
+                (elements.baseAddress.unsafelyUnwrapped + initializedCount).initialize(
+                    to: try MessagePackDecoding.decodeValue(
+                        Element.self, parser: &parser, context: context,
+                        path: context.path(path, appendingIndex: initializedCount)))
+                initializedCount &+= 1
+            }
+        }
+        result.assumingMemoryBound(to: [Element].self).initialize(to: array)
+    }
+}
+
+extension MessagePackDecoding {
+    /// Decodes a value from the wire array at the parser: an `Array` of
+    /// `Decodable` elements as `Array.init(from:)` and the unkeyed container
+    /// would, with the same errors, and any other type, or an array this does
+    /// not pay off for, through the machinery.
+    ///
+    /// Building the array in one allocation costs a few metadata lookups
+    /// more than the machinery spends on a first element, and saves the
+    /// reallocations its appends then make (to capacity 2, 4, …), each with
+    /// lookups of its own: empty and one-element arrays are left to the
+    /// machinery, before the type is even checked. So are arrays longer than
+    /// what is reserved up front.
+    ///
+    /// Out of line, so the casts keep their stack temporaries out of
+    /// `decodeValue`, which an optional result would also have added to. The
+    /// last array type and the last other type checked are remembered: a
+    /// failed conformance check costs about 700 instructions, and would be
+    /// repeated for every element of an array of a custom type that decodes
+    /// from a wire array, or for every `[T]?` decoded through its own
+    /// conformance, as it alternates with `[T]`.
+    @inline(never)
+    static func decodeArray<T: Decodable>(
+        _ type: T.Type,
+        parser: inout Parser,
+        context: MessagePackDecodingContext,
+        path: () -> MessagePackCodingPath
+    ) throws -> T {
+        // A header that fails to read is reported by the machinery.
+        var elements = parser
+        guard let elementCount = try? elements.readRawArrayHeader(),
+            elementCount >= 2, elementCount <= messagePackMaxPreallocation
+        else {
+            return try decodeWithContainers(type, parser: &parser, context: context, path: path)
+        }
+
+        let state = context.state
+        let arrayType: any MessagePackDecodableArray.Type
+        if let known = state.pointee.arrayType, known.type == ObjectIdentifier(T.self) {
+            arrayType = known.arrayType
+        } else if state.pointee.nonArrayType != ObjectIdentifier(T.self),
+            let checked = T.self as? any MessagePackDecodableArray.Type
+        {
+            arrayType = checked
+            state.pointee.arrayType = (ObjectIdentifier(T.self), checked)
+        } else {
+            state.pointee.nonArrayType = ObjectIdentifier(T.self)
+            return try decodeWithContainers(type, parser: &parser, context: context, path: path)
+        }
+
+        let pathNodeCount = state.pointee.pathNodes.count
+        defer { state.pointee.pathNodes.removeAll(from: pathNodeCount) }
+
+        // The checks of `MessagePackDirectDecoder.unkeyedContainer()`.
+        let path = path()
+        guard context.depth(path) < maxDepth else {
+            throw corrupted(.depthLimitExceeded, context, path, offset: parser.offset)
+        }
+        guard elementCount <= elements.count - elements.offset else {
+            throw corrupted(.insufficientData, context, path, offset: parser.offset)
+        }
+
+        // On failure the parser is left at the array, as the machinery
+        // leaves it, for a caller that catches the error and decodes the
+        // value as some other type.
+        let startOffset = parser.offset
+        parser = elements
+        do {
+            return try withUnsafeTemporaryAllocation(of: T.self, capacity: 1) { value in
+                let value = value.baseAddress.unsafelyUnwrapped
+                try arrayType.decodeElements(
+                    count: elementCount, parser: &parser, context: context, path: path, into: value)
+                return value.move()
+            }
+        } catch {
+            parser.offset = startOffset
+            throw error
+        }
+    }
+}

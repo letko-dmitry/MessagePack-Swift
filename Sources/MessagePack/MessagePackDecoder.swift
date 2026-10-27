@@ -161,6 +161,11 @@ struct MessagePackDecodingContext {
 
         /// The nodes of the coding paths in use; see ``MessagePackCodingPath``.
         var pathNodes: MessagePackStack<MessagePackCodingPath.Node>
+
+        /// The last `Array` type ``MessagePackDecoding/decodeArray(_:parser:context:path:)``
+        /// decoded, and the last other type it checked.
+        var arrayType: (type: ObjectIdentifier, arrayType: any MessagePackDecodableArray.Type)?
+        var nonArrayType: ObjectIdentifier?
     }
 
     /// The decoding state, in the frame of
@@ -446,6 +451,11 @@ enum MessagePackDecoding {
         (0xd4...0xd8).contains(format) || (0xc7...0xc9).contains(format)
     }
 
+    @inline(__always)
+    private static func isArrayFormat(_ format: UInt8) -> Bool {
+        (0x90...0x9f).contains(format) || format == 0xdc || format == 0xdd
+    }
+
     /// Reads one scalar at `offset`, attaching the coding path on failure.
     /// The path closure only runs when an error actually propagates.
     static func decodeScalar<V>(
@@ -532,6 +542,9 @@ enum MessagePackDecoding {
         // `Decimal`'s own conformance reads below.
         if ObjectIdentifier(T.self) == foundation.decimal, context.state.pointee.decimalDecodingStrategy != .deferredToDecimal {
             return try decodeDecimal(parser: &parser, context: context, path: path) as! T
+        }
+        if let format = try? parser.peekFormat(), isArrayFormat(format) {
+            return try decodeArray(type, parser: &parser, context: context, path: path)
         }
 
         return try decodeWithContainers(type, parser: &parser, context: context, path: path)

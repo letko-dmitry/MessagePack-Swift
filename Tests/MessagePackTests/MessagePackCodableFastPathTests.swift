@@ -221,6 +221,66 @@ struct CodableCodingPathTests {
 
 // MARK: - decodeIfPresent
 
+@Suite("Codable arrays of structs")
+struct CodableStructArrayTests {
+    private struct Leaf: Codable, Equatable {
+        var value: Int
+    }
+
+    @Test func arraysOfEveryLengthRoundTrip() throws {
+        // Empty and one-element arrays are decoded by the machinery, longer
+        // ones by the decoder's own loop, and longer than 4096 by the
+        // machinery again.
+        for count in [0, 1, 2, 3, 5, 4097] {
+            let leaves = (0..<count).map { Leaf(value: $0) }
+            let data = try MessagePackEncoder().encode(leaves)
+            #expect(try MessagePackDecoder().decode([Leaf].self, from: data) == leaves)
+        }
+    }
+
+    @Test func optionalArraysRoundTrip() throws {
+        let arrays: [[Leaf]?] = [[Leaf(value: 1), Leaf(value: 2)], nil, [Leaf(value: 3), Leaf(value: 4)]]
+        let data = try MessagePackEncoder().encode(arrays)
+        #expect(try MessagePackDecoder().decode([[Leaf]?].self, from: data) == arrays)
+    }
+
+    @Test func aFailedArrayLeavesTheCursorAtIt() throws {
+        /// Counts an array's elements without decoding them.
+        struct Skipped: Decodable {
+            var count: Int
+
+            init(from decoder: Decoder) throws {
+                count = try decoder.unkeyedContainer().count ?? 0
+            }
+        }
+
+        struct Lenient: Decodable {
+            var leaves: [Leaf]?
+            var skipped: Int?
+            var trailer: Int
+
+            init(from decoder: Decoder) throws {
+                var container = try decoder.unkeyedContainer()
+                leaves = try? container.decode([Leaf].self)
+                if leaves == nil {
+                    skipped = try container.decode(Skipped.self).count
+                }
+                trailer = try container.decode(Int.self)
+            }
+        }
+
+        let data = try MessagePackSerializer.serialize(
+            value: .array([
+                .array([.map([.string("value"): .uint8(1)]), .map([.string("value"): .string("x")])]),
+                .uint8(7),
+            ]))
+        let lenient = try MessagePackDecoder().decode(Lenient.self, from: data)
+        #expect(lenient.leaves == nil)
+        #expect(lenient.skipped == 2)
+        #expect(lenient.trailer == 7)
+    }
+}
+
 @Suite("Codable decodeIfPresent")
 struct CodableDecodeIfPresentTests {
     private struct Sparse: Decodable {
