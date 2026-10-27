@@ -219,7 +219,7 @@ struct CodableCodingPathTests {
     }
 }
 
-// MARK: - decodeIfPresent
+// MARK: - Arrays of structs
 
 @Suite("Codable arrays of structs")
 struct CodableStructArrayTests {
@@ -229,9 +229,9 @@ struct CodableStructArrayTests {
 
     @Test func arraysOfEveryLengthRoundTrip() throws {
         // Empty and one-element arrays are decoded by the machinery, longer
-        // ones by the decoder's own loop, and longer than 4096 by the
-        // machinery again.
-        for count in [0, 1, 2, 3, 5, 4097] {
+        // ones by the decoder's own loop, and longer than
+        // `messagePackMaxPreallocation` by the machinery again.
+        for count in [0, 1, 2, 3, 5, messagePackMaxPreallocation + 1] {
             let leaves = (0..<count).map { Leaf(value: $0) }
             let data = try MessagePackEncoder().encode(leaves)
             #expect(try MessagePackDecoder().decode([Leaf].self, from: data) == leaves)
@@ -279,6 +279,8 @@ struct CodableStructArrayTests {
         #expect(lenient.trailer == 7)
     }
 }
+
+// MARK: - decodeIfPresent
 
 @Suite("Codable decodeIfPresent")
 struct CodableDecodeIfPresentTests {
