@@ -698,7 +698,7 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
             parser.offset = elementStart
             throw MessagePackDecoding.decodingError(
                 error, type: type, parser: parser, context: context,
-                path: context.path(path, appendingIndex: currentIndex))
+                path: { context.path(path, appendingIndex: currentIndex) })
         }
     }
 

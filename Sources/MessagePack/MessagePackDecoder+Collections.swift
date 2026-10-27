@@ -103,7 +103,7 @@ extension MessagePackDecoding {
                 parser.offset = elementStart
                 throw decodingError(
                     error, type: E.self, parser: parser, context: context,
-                    path: context.path(path(), appendingIndex: index))
+                    path: { context.path(path(), appendingIndex: index) })
             }
         }
         return result

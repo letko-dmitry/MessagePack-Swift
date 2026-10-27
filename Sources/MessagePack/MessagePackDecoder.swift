@@ -355,7 +355,7 @@ enum MessagePackDecoding {
     @inline(never)
     static func decodingError(
         _ failure: consuming MessagePackDecodeFailure, type: Any.Type, parser: Parser,
-        context: MessagePackDecodingContext, path: @autoclosure () -> MessagePackCodingPath
+        context: MessagePackDecodingContext, path: () -> MessagePackCodingPath
     ) -> any Error {
         switch failure {
         case .wrongType:
@@ -562,7 +562,7 @@ enum MessagePackDecoding {
         } catch {
             // Errors point at the value's start, as on the other routes.
             parser.offset = offset
-            throw decodingError(error, type: type, parser: parser, context: context, path: path())
+            throw decodingError(error, type: type, parser: parser, context: context, path: path)
         }
     }
 
@@ -582,7 +582,7 @@ enum MessagePackDecoding {
             return try read(&parser)
         } catch {
             parser.offset = startOffset
-            throw decodingError(error, type: type, parser: parser, context: context, path: path())
+            throw decodingError(error, type: type, parser: parser, context: context, path: path)
         }
     }
 
