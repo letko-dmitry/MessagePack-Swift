@@ -473,7 +473,9 @@ enum MessagePackDecoding {
         return narrowed
     }
 
-    /// Leniently reads any integer as the nearest `Float`.
+    /// Leniently reads any integer as the nearest `Float`. Kept apart from
+    /// the float path, unlike in ``MessagePackReader/readFloat()``: measured,
+    /// each shape is the faster one on its route.
     @inline(__always)
     private static func readIntegerAsFloat(_ parser: inout Parser) throws(MessagePackDecodeFailure) -> Float {
         let value: Float?

@@ -401,6 +401,18 @@ extension MessagePackSerializer.Parser {
         }
     }
 
+    /// Like ``readRawDouble()``, for a `Float`: an integer is rounded to the
+    /// nearest `Float` first (``readRawIntegerAsFloat()``), which a `Double`
+    /// holds exactly, so narrowing the result rounds it once.
+    @inlinable
+    @inline(__always)
+    mutating func readRawDoubleForFloat() throws(MessagePackError) -> Double? {
+        if let value = try readRawFloat() {
+            return value
+        }
+        return try readRawIntegerAsFloat().map(Double.init)
+    }
+
     /// Consumes a nil marker if the next value is nil, and returns whether it
     /// did. Unlike the other `readRaw` methods this reports presence rather
     /// than a payload, so it needs no rewind: nothing is consumed unless the

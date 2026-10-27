@@ -100,14 +100,21 @@ public struct MessagePackReader: ~Copyable {
     /// instead of becoming infinite.
     @inlinable
     public mutating func readFloat() throws(MessagePackError) -> Float {
-        if let value = try parser.readRawFloat() {
-            let narrowed = Float(value)
-            guard !(narrowed.isInfinite && value.isFinite) else {
-                try MessagePackError.throw(.floatOverflow)
-            }
-            return narrowed
+        let value = try readDoubleForFloat()
+        let narrowed = Float(value)
+        guard !(narrowed.isInfinite && value.isFinite) else {
+            try MessagePackError.throw(.floatOverflow)
         }
-        guard let value = try parser.readRawIntegerAsFloat() else {
+        return narrowed
+    }
+
+    /// Reads what ``readFloat()`` narrows, like ``readDouble()``: the read
+    /// stays a call, as `readDouble()` does, and the narrowing is inlined
+    /// into the caller. Read and narrowed together in one call, every
+    /// element of a `[Float]` cost 3 more instructions.
+    @inlinable
+    mutating func readDoubleForFloat() throws(MessagePackError) -> Double {
+        guard let value = try parser.readRawDoubleForFloat() else {
             try parser.throwTypeMismatch(expected: "float")
         }
         return value
