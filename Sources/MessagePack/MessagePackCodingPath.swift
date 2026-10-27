@@ -61,7 +61,7 @@ extension MessagePackDecodingContext {
     /// The keys of the path `path` makes, popping the nodes it pushes: the
     /// errors that a failed decode builds (and `try?` drops, in a loop
     /// perhaps) leave nothing behind on the stack.
-    func codingPath(_ path: () -> MessagePackCodingPath) -> [CodingKey] {
+    func codingPath(popping path: () -> MessagePackCodingPath) -> [CodingKey] {
         let nodeCount = state.pointee.pathNodes.count
         defer { state.pointee.pathNodes.removeAll(from: nodeCount) }
 

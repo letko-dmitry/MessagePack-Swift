@@ -305,7 +305,7 @@ enum MessagePackDecoding {
     ) -> any Error {
         DecodingError.dataCorrupted(
             DecodingError.Context(
-                codingPath: context.codingPath(path),
+                codingPath: context.codingPath(popping: path),
                 debugDescription: "Invalid MessagePack data: \(error)\(at(offset))",
                 underlyingError: error
             ))
@@ -335,14 +335,14 @@ enum MessagePackDecoding {
             return DecodingError.valueNotFound(
                 type,
                 DecodingError.Context(
-                    codingPath: context.codingPath(path),
+                    codingPath: context.codingPath(popping: path),
                     debugDescription: "Cannot decode \(type) -- found nil value instead\(at(parser.offset))"
                 ))
         }
         return DecodingError.typeMismatch(
             type,
             DecodingError.Context(
-                codingPath: context.codingPath(path),
+                codingPath: context.codingPath(popping: path),
                 debugDescription:
                     "Expected \(type) but found MessagePack format byte 0x\(String(format, radix: 16))\(at(parser.offset))"
             ))
@@ -361,7 +361,7 @@ enum MessagePackDecoding {
             return wrongType(type, parser, context, path())
         case .invalid(let message):
             return DecodingError.dataCorrupted(
-                DecodingError.Context(codingPath: context.codingPath(path), debugDescription: message + at(parser.offset)))
+                DecodingError.Context(codingPath: context.codingPath(popping: path), debugDescription: message + at(parser.offset)))
         case .corrupted(let error):
             return corrupted(error, context, path(), offset: parser.offset)
         }
