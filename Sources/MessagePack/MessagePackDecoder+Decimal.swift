@@ -16,10 +16,10 @@ extension MessagePackDecoding {
     ) throws -> Decimal {
         let strategy = context.state.pointee.decimalDecodingStrategy
         if strategy.contains(.deferredToDecimal), let format = try? parser.peekFormat(), isMapFormat(format) {
-            return try decodeWithContainers(Decimal.self, parser: &parser, context: context, path: path())
+            return try decodeWithContainers(Decimal.self, parser: &parser, context: context, path: path)
         }
 
-        return try readScalarOrRewind(Decimal.self, &parser, parser.offset, path) {
+        return try readScalarOrRewind(Decimal.self, &parser, parser.offset, context, path) {
             (parser: inout Parser) throws(MessagePackDecodeFailure) -> Decimal in
             try readDecimal(&parser, strategy: strategy)
         }

@@ -3,8 +3,9 @@
 /// when it outgrows that memory.
 ///
 /// The encoder keeps its open containers and coding-path nodes in two of
-/// them: a message nests a few levels deep, and arrays for those cost two
-/// allocations (and their growth) on every `encode` call.
+/// them, the decoder its coding-path nodes in one: a message nests a few
+/// levels deep, and arrays for those cost allocations (and their growth) on
+/// every call, as a linked list of nodes costs one per nested value.
 ///
 /// The owner calls ``deallocate()`` once it is done with the stack.
 struct MessagePackStack<Element> {

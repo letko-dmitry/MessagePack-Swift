@@ -161,7 +161,7 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     let offset: Int
     let path: MessagePackCodingPath
 
-    var codingPath: [CodingKey] { path.keys }
+    var codingPath: [CodingKey] { context.codingPath(path) }
 
     init(
         context: MessagePackDecodingContext, storage: MessagePackKeyedStorage, offset: Int, path: MessagePackCodingPath
@@ -215,7 +215,7 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
         case .missing:
             return nil
         case .failed(let error):
-            throw MessagePackDecoding.corrupted(error, path, offset: offset)
+            throw MessagePackDecoding.corrupted(error, context, path, offset: offset)
         }
     }
 
@@ -332,7 +332,7 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T {
         try MessagePackDecoding.decodeScalar(
-            type, context: context, offset: try valueOffset(key), path: path.appending(key), read)
+            type, context: context, offset: try valueOffset(key), path: context.path(path, appending: key), read)
     }
 
     @inline(__always)
@@ -343,7 +343,8 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
         guard let index = try presentEntry(key) else { return nil }
 
         return try MessagePackDecoding.decodeScalar(
-            type, context: context, offset: storage.entry(at: index).valueOffset, path: path.appending(key), read)
+            type, context: context, offset: storage.entry(at: index).valueOffset,
+            path: context.path(path, appending: key), read)
     }
 
     func decode(_ type: Bool.Type, forKey key: Key) throws -> Bool {
@@ -492,7 +493,7 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     private func decode<T: Decodable>(_ type: T.Type, entry index: Int, forKey key: Key) throws -> T {
         var parser = context.parser(at: storage.entry(at: index).valueOffset)
         let value = try MessagePackDecoding.decodeValue(
-            type, parser: &parser, context: context, path: path.appending(key))
+            type, parser: &parser, context: context, path: context.path(path, appending: key))
         storage.recordValueEnd(parser.offset, at: index)
 
         return value
@@ -502,13 +503,13 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
         keyedBy type: NestedKey.Type, forKey key: Key
     ) throws -> KeyedDecodingContainer<NestedKey> {
         let decoder = MessagePackDirectDecoder(
-            context: context, offset: try valueOffset(key), path: path.appending(key))
+            context: context, offset: try valueOffset(key), path: context.path(path, appending: key))
         return try decoder.container(keyedBy: NestedKey.self)
     }
 
     func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
         let decoder = MessagePackDirectDecoder(
-            context: context, offset: try valueOffset(key), path: path.appending(key))
+            context: context, offset: try valueOffset(key), path: context.path(path, appending: key))
         return try decoder.unkeyedContainer()
     }
 
@@ -516,11 +517,12 @@ final class MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingCont
     /// on a nil value rather than throwing `keyNotFound`.
     private func superDecoder(for key: some CodingKey) throws -> Decoder {
         guard let index = try entryIndex(for: key) else {
-            return MessagePackNilDecoder(
-                codingPath: path.appending(key).keys, userInfo: context.userInfo)
+            var codingPath = codingPath
+            codingPath.append(key)
+            return MessagePackNilDecoder(codingPath: codingPath, userInfo: context.userInfo)
         }
         return MessagePackDirectDecoder(
-            context: context, offset: storage.entry(at: index).valueOffset, path: path.appending(key))
+            context: context, offset: storage.entry(at: index).valueOffset, path: context.path(path, appending: key))
     }
 
     func superDecoder() throws -> Decoder {
@@ -605,7 +607,7 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     var parser: MessagePackSerializer.Parser
     var currentIndex = 0
 
-    var codingPath: [CodingKey] { path.keys }
+    var codingPath: [CodingKey] { context.codingPath(path) }
     var count: Int? { elementCount }
     var isAtEnd: Bool { currentIndex >= elementCount }
 
@@ -623,10 +625,12 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
 
     private func checkEnd(_ type: Any.Type) throws {
         if currentIndex >= elementCount {
+            var codingPath = codingPath
+            codingPath.append(MessagePackCodingKey(index: currentIndex))
             throw DecodingError.valueNotFound(
                 type,
                 DecodingError.Context(
-                    codingPath: path.appending(index: currentIndex).keys,
+                    codingPath: codingPath,
                     debugDescription: "Unkeyed container is at end"
                 ))
         }
@@ -658,8 +662,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         } catch {
             parser.offset = elementStart
             throw MessagePackDecoding.decodingError(
-                error, type: type, parser: parser,
-                path: path.appending(index: currentIndex))
+                error, type: type, parser: parser, context: context,
+                path: context.path(path, appendingIndex: currentIndex))
         }
     }
 
@@ -733,10 +737,11 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         try checkEnd(type)
         // Local copies so the lazy coding-path closure does not capture
         // `self` while `parser` is passed inout.
+        let context = context
         let parentPath = path
         let index = currentIndex
         let value = try MessagePackDecoding.decodeValue(
-            type, parser: &parser, context: context, path: parentPath.appending(index: index))
+            type, parser: &parser, context: context, path: context.path(parentPath, appendingIndex: index))
         advanceIndex()
         return value
     }
@@ -745,29 +750,29 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         keyedBy type: NestedKey.Type
     ) throws -> KeyedDecodingContainer<NestedKey> {
         try checkEnd(KeyedDecodingContainer<NestedKey>.self)
-        let elementPath = path.appending(index: currentIndex)
+        let elementPath = context.path(path, appendingIndex: currentIndex)
         let decoder = MessagePackDirectDecoder(context: context, offset: parser.offset, path: elementPath)
         let container = try decoder.container(keyedBy: NestedKey.self)
-        try MessagePackDecoding.skip(&parser, path: elementPath)
+        try MessagePackDecoding.skip(&parser, context: context, path: elementPath)
         advanceIndex()
         return container
     }
 
     mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
         try checkEnd(UnkeyedDecodingContainer.self)
-        let elementPath = path.appending(index: currentIndex)
+        let elementPath = context.path(path, appendingIndex: currentIndex)
         let decoder = MessagePackDirectDecoder(context: context, offset: parser.offset, path: elementPath)
         let container = try decoder.unkeyedContainer()
-        try MessagePackDecoding.skip(&parser, path: elementPath)
+        try MessagePackDecoding.skip(&parser, context: context, path: elementPath)
         advanceIndex()
         return container
     }
 
     mutating func superDecoder() throws -> Decoder {
         try checkEnd(Decoder.self)
-        let elementPath = path.appending(index: currentIndex)
+        let elementPath = context.path(path, appendingIndex: currentIndex)
         let decoder = MessagePackDirectDecoder(context: context, offset: parser.offset, path: elementPath)
-        try MessagePackDecoding.skip(&parser, path: elementPath)
+        try MessagePackDecoding.skip(&parser, context: context, path: elementPath)
         advanceIndex()
         return decoder
     }

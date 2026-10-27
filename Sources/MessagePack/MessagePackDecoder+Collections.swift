@@ -18,33 +18,33 @@ extension MessagePackDecoding {
         // optimizer then merges into one function.
         switch collectionType {
         case .intArray:
-            return try decodePrimitiveArray(&parser, path, readIntegerInlined) as [Int] as! T
+            return try decodePrimitiveArray(&parser, context, path, readIntegerInlined) as [Int] as! T
         case .stringArray:
-            return try decodePrimitiveArray(&parser, path, readString) as [String] as! T
+            return try decodePrimitiveArray(&parser, context, path, readString) as [String] as! T
         case .doubleArray:
-            return try decodePrimitiveArray(&parser, path, readDouble) as [Double] as! T
+            return try decodePrimitiveArray(&parser, context, path, readDouble) as [Double] as! T
         case .boolArray:
-            return try decodePrimitiveArray(&parser, path, readBool) as [Bool] as! T
+            return try decodePrimitiveArray(&parser, context, path, readBool) as [Bool] as! T
         case .floatArray:
-            return try decodePrimitiveArray(&parser, path, readFloat) as [Float] as! T
+            return try decodePrimitiveArray(&parser, context, path, readFloat) as [Float] as! T
         case .int64Array:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [Int64] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [Int64] as! T
         case .uInt64Array:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt64] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [UInt64] as! T
         case .int32Array:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [Int32] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [Int32] as! T
         case .uInt32Array:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt32] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [UInt32] as! T
         case .int16Array:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [Int16] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [Int16] as! T
         case .uInt16Array:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt16] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [UInt16] as! T
         case .int8Array:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [Int8] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [Int8] as! T
         case .uInt8Array:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt8] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [UInt8] as! T
         case .uIntArray:
-            return try decodePrimitiveArray(&parser, path, readInteger) as [UInt] as! T
+            return try decodePrimitiveArray(&parser, context, path, readInteger) as [UInt] as! T
         case .intDictionary:
             if let dictionary = decodePrimitiveDictionary(&parser, readIntegerInlined) as [String: Int]? {
                 return dictionary as! T
@@ -64,7 +64,7 @@ extension MessagePackDecoding {
         }
 
         // Anything but a map of unique string keys and values of the type.
-        return try decodeWithContainers(type, parser: &parser, context: context, path: path())
+        return try decodeWithContainers(type, parser: &parser, context: context, path: path)
     }
 
     /// Decodes an array of a natively represented element type with a tight
@@ -73,6 +73,7 @@ extension MessagePackDecoding {
     /// the element's index in the coding path.
     static func decodePrimitiveArray<E>(
         _ parser: inout Parser,
+        _ context: MessagePackDecodingContext,
         _ path: () -> MessagePackCodingPath,
         _ read: (inout Parser) throws(MessagePackDecodeFailure) -> E
     ) throws -> [E] {
@@ -81,16 +82,16 @@ extension MessagePackDecoding {
         do throws(MessagePackError) {
             headerCount = try parser.readRawArrayHeader()
         } catch {
-            throw corrupted(error, path(), offset: startOffset)
+            throw corrupted(error, context, path(), offset: startOffset)
         }
         guard let elementCount = headerCount else {
             parser.offset = startOffset
-            throw wrongType([E].self, parser, path())
+            throw wrongType([E].self, parser, context, path())
         }
         // Each element takes at least one byte; reject hostile counts before
         // reserving storage.
         guard elementCount <= parser.count - parser.offset else {
-            throw corrupted(.insufficientData, path(), offset: startOffset)
+            throw corrupted(.insufficientData, context, path(), offset: startOffset)
         }
         var result: [E] = []
         result.reserveCapacity(Swift.min(elementCount, messagePackMaxPreallocation))
@@ -101,8 +102,8 @@ extension MessagePackDecoding {
             } catch {
                 parser.offset = elementStart
                 throw decodingError(
-                    error, type: E.self, parser: parser,
-                    path: path().appending(index: index))
+                    error, type: E.self, parser: parser, context: context,
+                    path: context.path(path(), appendingIndex: index))
             }
         }
         return result
