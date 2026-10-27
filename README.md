@@ -168,11 +168,15 @@ let person = try MessagePackDecoder().decode(Person.self, from: data)
 
 - Keyed containers become maps with string keys; maps with integer wire keys
   can be decoded through `CodingKey.intValue`.
-- `Date` ↔ the spec's timestamp extension (ext type -1; numeric seconds are
-  also accepted when decoding), `Data` ↔ bin 8/16/32, and
-  `MessagePackTimestamp` ↔ ext type -1. Dates that cannot be represented as
-  a timestamp (non-finite, out of `Int64` seconds range) throw
-  `EncodingError.invalidValue`.
+- `Date` ↔ the spec's timestamp extension (ext type -1), `Data` ↔ bin
+  8/16/32, and `MessagePackTimestamp` ↔ ext type -1. Dates that cannot be
+  represented as a timestamp (non-finite, out of `Int64` seconds range)
+  throw `EncodingError.invalidValue`.
+  `MessagePackDecoder(dateDecodingStrategy:)` takes the set of formats a
+  `Date` is read from: `.timestamp` and `.convertFromSecondsSince1970` (a
+  number of seconds since 1970, a convention rather than a MessagePack
+  type), both by default as in earlier versions; `.timestamp` alone reads
+  only timestamps, like the macro route.
 - Integers (and doubles that a float 32 holds exactly) encode with the
   smallest wire format; integers decode from any integer format that fits
   the requested type; out-of-range numbers (including float64 → `Float`
@@ -311,4 +315,4 @@ Deserialization of a flat scalar array performs 1 allocation (the result array);
 swift test
 ```
 
-251 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
+255 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).

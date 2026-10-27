@@ -10,8 +10,9 @@ import Foundation
 /// their elements.
 ///
 /// Special types:
-/// - `Date` decodes from the timestamp extension type (-1), or leniently from
-///   a numeric value interpreted as seconds since 1970.
+/// - `Date` decodes from the formats ``dateDecodingStrategy`` accepts: by
+///   default the timestamp extension type (-1) and, as in earlier versions, a
+///   number of seconds since 1970.
 /// - `Data` decodes from bin 8/16/32.
 /// - ``MessagePackTimestamp`` decodes from the timestamp extension type.
 /// - `Decimal` decodes from the formats ``decimalDecodingStrategy`` accepts:
@@ -68,6 +69,34 @@ public struct MessagePackDecoder {
         public static var convertFromFloat: Self { Self(rawValue: 1 << 3) }
     }
 
+    /// How `Date` values are read, named like `JSONDecoder`'s strategies. As
+    /// an option set, it accepts several formats at once: by default both,
+    /// as earlier versions did.
+    public struct DateDecodingStrategy: OptionSet, Sendable {
+        public let rawValue: UInt8
+
+        // Emitted into clients, like the `Decimal` options.
+
+        @inline(always)
+        @export(implementation)
+        public init(rawValue: UInt8) {
+            self.rawValue = rawValue
+        }
+
+        /// Reads the spec's timestamp extension type (-1), which
+        /// ``MessagePackEncoder`` writes.
+        @inline(always)
+        @export(implementation)
+        public static var timestamp: Self { Self(rawValue: 1 << 0) }
+        /// Converts from a number, integer or float, of seconds since
+        /// 1970-01-01T00:00:00 UTC. A convention rather than a MessagePack
+        /// type: without it, only timestamps are read, as on the
+        /// `@MessagePackSerializable` route.
+        @inline(always)
+        @export(implementation)
+        public static var convertFromSecondsSince1970: Self { Self(rawValue: 1 << 1) }
+    }
+
     /// Contextual information made available to the `Decodable` types via
     /// `Decoder.userInfo`.
     public var userInfo = [CodingUserInfoKey: Any]()
@@ -76,8 +105,16 @@ public struct MessagePackDecoder {
     /// not accept is a type mismatch.
     public var decimalDecodingStrategy: DecimalDecodingStrategy
 
-    public init(decimalDecodingStrategy: DecimalDecodingStrategy = .deferredToDecimal) {
+    /// How `Date` values are read; a value in a format the strategy does not
+    /// accept is a type mismatch.
+    public var dateDecodingStrategy: DateDecodingStrategy
+
+    public init(
+        decimalDecodingStrategy: DecimalDecodingStrategy = .deferredToDecimal,
+        dateDecodingStrategy: DateDecodingStrategy = [.timestamp, .convertFromSecondsSince1970]
+    ) {
         self.decimalDecodingStrategy = decimalDecodingStrategy
+        self.dateDecodingStrategy = dateDecodingStrategy
     }
 
     /// Decodes a value of the given type from MessagePack binary data.
@@ -110,6 +147,7 @@ public struct MessagePackDecoder {
                 count: raw.count,
                 userInfo: userInfo,
                 decimalDecodingStrategy: decimalDecodingStrategy,
+                dateDecodingStrategy: dateDecodingStrategy,
                 pathNodes: MessagePackStack(memory: pathNodes)
             )
             defer { state.pathNodes.deallocate() }
@@ -143,6 +181,7 @@ struct MessagePackDecodingContext {
         let count: Int
         let userInfo: [CodingUserInfoKey: Any]
         let decimalDecodingStrategy: MessagePackDecoder.DecimalDecodingStrategy
+        let dateDecodingStrategy: MessagePackDecoder.DateDecodingStrategy
 
         /// Memo of the most recently completed value whose end no keyed
         /// storage tracks: an unkeyed container that decoded its last
@@ -472,11 +511,19 @@ enum MessagePackDecoding {
         return timestamp
     }
 
-    static func readDate(_ parser: inout Parser) throws(MessagePackDecodeFailure) -> Date {
+    /// Reads a `Date` from a format `strategy` accepts; anything else is the
+    /// wrong type. Inlined into `decodeValue` like the one-format reader
+    /// before it: called out of line, every `Date` paid about 25 more
+    /// instructions for the call.
+    @inline(__always)
+    static func readDate(
+        _ parser: inout Parser, strategy: MessagePackDecoder.DateDecodingStrategy
+    ) throws(MessagePackDecodeFailure) -> Date {
         if let format = try? parser.peekFormat(), isExtFormat(format) {
+            guard strategy.contains(.timestamp) else { throw .wrongType }
             return try readTimestamp(&parser).date
         }
-        // Leniently accept a numeric value as seconds since 1970.
+        guard strategy.contains(.convertFromSecondsSince1970) else { throw .wrongType }
         return Date(timeIntervalSince1970: try readDouble(&parser))
     }
 
@@ -561,7 +608,11 @@ enum MessagePackDecoding {
         if T.self == UInt.self { return try readScalarOrRewind(UInt.self, &parser, startOffset, context, path, readInteger) as! T }
         let foundation = MessagePackFoundationTypes.shared
         if ObjectIdentifier(T.self) == foundation.date {
-            return try readScalarOrRewind(Date.self, &parser, startOffset, context, path, readDate) as! T
+            let strategy = context.state.pointee.dateDecodingStrategy
+            return try readScalarOrRewind(Date.self, &parser, startOffset, context, path) {
+                (parser: inout Parser) throws(MessagePackDecodeFailure) -> Date in
+                try readDate(&parser, strategy: strategy)
+            } as! T
         }
         if ObjectIdentifier(T.self) == foundation.data {
             return try readScalarOrRewind(Data.self, &parser, startOffset, context, path, readBinary) as! T

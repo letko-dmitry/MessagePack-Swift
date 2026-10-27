@@ -246,6 +246,76 @@ struct CodableInteropTests {
     }
 }
 
+// MARK: - Date options
+
+@Suite("Codable Date options")
+struct CodableDateOptionTests {
+    private struct Event: Codable, Equatable {
+        var at: Date
+        var history: [Date]
+        var ended: Date?
+    }
+
+    private static let timestampDecoder = MessagePackDecoder(dateDecodingStrategy: .timestamp)
+
+    private static let numbers: [(value: MessagePackValue, seconds: TimeInterval)] = [
+        (.uint32(1_000_000), 1_000_000), (.int8(-5), -5), (.float64(1000.25), 1000.25), (.float32(0.5), 0.5),
+    ]
+
+    /// By default both formats are read, as in earlier versions.
+    @Test func defaultReadsTimestampsAndNumbers() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000.5)
+        #expect(try MessagePackDecoder().decode(Date.self, from: MessagePackEncoder().encode(date)) == date)
+
+        for (value, seconds) in Self.numbers {
+            let data = try MessagePackSerializer.serialize(value: value)
+            #expect(try MessagePackDecoder().decode(Date.self, from: data) == Date(timeIntervalSince1970: seconds))
+        }
+    }
+
+    @Test func timestampStrategyRejectsNumbers() throws {
+        for (value, _) in Self.numbers {
+            let data = try MessagePackSerializer.serialize(value: value)
+            #expect {
+                try Self.timestampDecoder.decode(Date.self, from: data)
+            } throws: { error in
+                if case DecodingError.typeMismatch(let type, _) = error { type == Date.self } else { false }
+            }
+        }
+    }
+
+    @Test func timestampStrategyReadsTimestamps() throws {
+        let event = Event(
+            at: Date(timeIntervalSince1970: 1_700_000_000),
+            history: [Date(timeIntervalSince1970: -1.5), Date(timeIntervalSince1970: 0)],
+            ended: nil
+        )
+        #expect(try Self.timestampDecoder.decode(Event.self, from: MessagePackEncoder().encode(event)) == event)
+        #expect(try Self.timestampDecoder.decode(Date?.self, from: Data([0xc0])) == nil)
+    }
+
+    /// A format left out of the set is a type mismatch, as for `Decimal`.
+    @Test func otherFormatsAreAMismatch() throws {
+        let timestamp = try MessagePackEncoder().encode(Date(timeIntervalSince1970: 1))
+        let number = try MessagePackSerializer.serialize(value: .uint8(1))
+        let cases: [(MessagePackDecoder.DateDecodingStrategy, Data)] = [
+            (.convertFromSecondsSince1970, timestamp),
+            ([], timestamp),
+            ([], number),
+        ]
+        for (strategy, data) in cases {
+            #expect {
+                try MessagePackDecoder(dateDecodingStrategy: strategy).decode(Date.self, from: data)
+            } throws: { error in
+                if case DecodingError.typeMismatch = error { true } else { false }
+            }
+        }
+
+        let numbersOnly = MessagePackDecoder(dateDecodingStrategy: .convertFromSecondsSince1970)
+        #expect(try numbersOnly.decode(Date.self, from: number) == Date(timeIntervalSince1970: 1))
+    }
+}
+
 // MARK: - Error handling
 
 @Suite("Codable errors")
