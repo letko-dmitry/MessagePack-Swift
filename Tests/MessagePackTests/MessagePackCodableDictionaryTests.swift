@@ -40,8 +40,6 @@ private let holder = Holder(bytes: [1: "x", -2: "y"], nested: [2: [0.5: true]], 
 
 @Suite("Codable dictionary strategy")
 struct CodableDictionaryStrategyTests {
-    /// By default, `Dictionary`'s own conformance: what earlier versions
-    /// wrote.
     @Test func defaultKeepsTheFormsOfEarlierVersions() throws {
         #expect([UInt8](try MessagePackEncoder().encode([1: "a"])) == [0x81, 0xa1, 0x31, 0xa1, 0x61])
         #expect([UInt8](try MessagePackEncoder().encode([Int8(1): 2])) == [0x92, 0x01, 0x02])
@@ -146,8 +144,6 @@ struct CodableDictionaryStrategyTests {
         #expect(try mapEncoder.encode(value) == MessagePackSerializer.serialize(value), sourceLocation: sourceLocation)
     }
 
-    /// Decodes the macro's, `.convertToMap`'s, and the default's output with
-    /// `Codable`, and `.convertToMap`'s with the macro.
     private func expectRoundTrips<T: Codable & MessagePackSerializable & Equatable>(
         _ value: T, sourceLocation: SourceLocation = #_sourceLocation
     ) throws {

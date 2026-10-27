@@ -12,9 +12,7 @@ import Foundation
 /// A class so it can be recycled across the containers of one `decode`
 /// call through ``MessagePackDecodingContext/reusableKeyedStorage()`` (so
 /// `reset` must leave no state behind from a previous use) and referred to
-/// from the context while its value is being decoded. It also holds what
-/// the container decoding its map needs, so that container is a single
-/// reference.
+/// from the context while its value is being decoded.
 final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State, Void> {
     struct Entry {
         let keyOffset: Int
@@ -96,7 +94,6 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
         }
     }
 
-    /// Moves the entries to memory for `capacity` of them.
     @inline(never)
     private func reallocateEntries(capacity: Int) {
         let entries = UnsafeMutablePointer<Entry>.allocate(capacity: capacity)

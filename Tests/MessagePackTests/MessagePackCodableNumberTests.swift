@@ -192,8 +192,6 @@ struct FloatsForIntegersTests {
 
 // MARK: - Integers for floats
 
-/// An integer decodes into a `Float`, as in earlier versions, rounded once
-/// to the nearest `Float` on every route.
 @Suite("Integers for floats")
 struct IntegersForFloatsTests {
     /// Integers that a `Double` rounds onto the midpoint between two

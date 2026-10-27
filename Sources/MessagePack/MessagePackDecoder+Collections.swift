@@ -147,11 +147,6 @@ extension MessagePackDecoding {
 
 // MARK: - Dictionaries from maps
 
-/// A dictionary whose own `Decodable` conformance reads an array of keys and
-/// values in turn rather than a map. Decoded from a map, as
-/// ``MessagePackEncoder/DictionaryEncodingStrategy/convertToMap`` and
-/// `@MessagePackSerializable` write it, it reads the map's entries as those
-/// pairs; see ``MessagePackDirectDecoder/unkeyedContainer()``.
 protocol MessagePackDecodableDictionary {
     static var decodesFromPairs: Bool { get }
 }

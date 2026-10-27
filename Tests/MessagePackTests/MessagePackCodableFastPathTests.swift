@@ -245,7 +245,6 @@ struct CodableStructArrayTests {
     }
 
     @Test func aFailedArrayLeavesTheCursorAtIt() throws {
-        /// Counts an array's elements without decoding them.
         struct Skipped: Decodable {
             var count: Int
 

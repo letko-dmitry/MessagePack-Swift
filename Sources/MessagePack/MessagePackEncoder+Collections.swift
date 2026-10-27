@@ -106,10 +106,7 @@ extension MessagePackEncodingContext {
 
 // MARK: - Dictionaries as maps
 
-/// A dictionary that ``MessagePackEncoder/DictionaryEncodingStrategy/convertToMap``
-/// writes as a map whose keys are encoded like any other value.
 protocol MessagePackEncodableDictionary {
-    /// Writes the dictionary at `dictionary` as a map.
     static func encodeEntries(
         at dictionary: UnsafeRawPointer, context: MessagePackEncodingContext, path: MessagePackEncodingPath
     ) throws

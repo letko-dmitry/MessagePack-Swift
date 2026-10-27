@@ -262,7 +262,6 @@ struct CodableDateOptionTests {
         (.uint32(1_000_000), 1_000_000), (.int8(-5), -5), (.float64(1000.25), 1000.25), (.float32(0.5), 0.5),
     ]
 
-    /// By default both formats are read, as in earlier versions.
     @Test func defaultReadsTimestampsAndNumbers() throws {
         let date = Date(timeIntervalSince1970: 1_700_000_000.5)
         #expect(try MessagePackDecoder().decode(Date.self, from: MessagePackEncoder().encode(date)) == date)
@@ -294,7 +293,6 @@ struct CodableDateOptionTests {
         #expect(try Self.timestampDecoder.decode(Date?.self, from: Data([0xc0])) == nil)
     }
 
-    /// A format left out of the set is a type mismatch, as for `Decimal`.
     @Test func otherFormatsAreAMismatch() throws {
         let timestamp = try MessagePackEncoder().encode(Date(timeIntervalSince1970: 1))
         let number = try MessagePackSerializer.serialize(value: .uint8(1))

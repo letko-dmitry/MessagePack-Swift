@@ -43,7 +43,6 @@ extension MessagePackDecodingContext {
         path(parent, appending: MessagePackCodingKey(index: index))
     }
 
-    /// The number of keys of `path`, which is the container nesting depth.
     func depth(_ path: MessagePackCodingPath) -> Int {
         path.node < 0 ? 0 : state.pointee.pathNodes[path.node].depth
     }

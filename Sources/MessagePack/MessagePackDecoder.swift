@@ -588,8 +588,7 @@ enum MessagePackDecoding {
     /// Decodes a value of arbitrary `Decodable` type at the parser's current
     /// position, advancing the parser past it. Types MessagePack represents
     /// natively decode directly, bypassing the `Decodable` container
-    /// machinery (and its per-value decoder, existential, and coding-path
-    /// allocations).
+    /// machinery.
     static func decodeValue<T: Decodable>(
         _ type: T.Type,
         parser: inout Parser,
@@ -788,9 +787,6 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
             startOffset: offset, parser: parser)
     }
 
-    /// The map at `offset` as its keys and values in turn, which a
-    /// dictionary's own conformance reads for a key type it decodes from
-    /// pairs: on the wire, a map's entries are those values in that order.
     private func mapEntriesAsPairs() throws -> UnkeyedDecodingContainer {
         var parser = context.parser(at: offset)
         let entryCount: Int?
