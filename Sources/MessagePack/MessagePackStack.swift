@@ -41,10 +41,15 @@ struct MessagePackStack<Element> {
         count &+= 1
     }
 
-    /// Removes the elements from `index` on.
+    /// Removes the elements from `index` on, one at a time: through
+    /// `deinitialize(count:)`, a count known only at run time called the
+    /// runtime's generic `swift_arrayDestroy`, for the one node most pops
+    /// remove.
     mutating func removeAll(from index: Int) {
-        (base + index).deinitialize(count: count &- index)
-        count = index
+        while count > index {
+            count &-= 1
+            (base + count).deinitialize(count: 1)
+        }
     }
 
     mutating func removeLast() {
