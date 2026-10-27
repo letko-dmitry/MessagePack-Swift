@@ -23,6 +23,15 @@ let decoded = try MessagePackSerializer.deserialize(Person.self, from: data)
 (`throws(MessagePackError)`); the macro section below has the details and the
 other routes (`Codable`, value tree).
 
+Every decoding entry point also takes a `RawSpan`, reading bytes in any
+contiguous memory in place rather than copying them into a `Data` first:
+
+```swift
+let bytes: [UInt8] = …   // from a socket, a file, another library
+let slice = bytes[...]   // a span cannot borrow a temporary; from OS 26, bytes.span.bytes
+let decoded = try MessagePackSerializer.deserialize(Person.self, from: slice.span.bytes)
+```
+
 ## Comparison with other MessagePack libraries
 
 `Benchmarks/Comparison` measures MessagePack-Swift against
@@ -300,4 +309,4 @@ Deserialization of a flat scalar array performs 1 allocation (the result array);
 swift test
 ```
 
-245 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).
+249 tests cover every format's byte-level encoding, boundary values (fixint/str/bin/array/map size class edges), Unicode, error paths (truncation, reserved bytes, invalid UTF-8, trailing bytes, depth limit), round-trip fidelity, the Codable layer (scalar extremes, nested/optional/enum/dictionary round trips, serializer interop, class inheritance via `superEncoder`, manual keyed/unkeyed/nested containers, decoding errors with full coding paths and byte offsets, `decodeIfPresent`, string-keyed dictionaries, `Decimal`, and 128-bit integers), differential checks that seeded random value trees encode byte-for-byte alike on the serializer, macro, and `Codable` routes, 20,000 seeded mutations of valid input that every decoder must reject or decode without crashing, and the macro layer (expansion snapshots, round trips for every supported field type, wire-format details, decoding robustness against reordered/unknown/duplicate/hostile input, and byte-for-byte Codable interop).

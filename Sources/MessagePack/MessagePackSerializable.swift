@@ -100,13 +100,8 @@ extension MessagePackSerializer {
         _ type: T.Type = T.self, from data: Data
     ) throws(MessagePackError) -> T {
         let result: Result<T, MessagePackError> = data.withUnsafeBytes { buffer in
-            var reader = MessagePackReader(buffer: buffer)
             do throws(MessagePackError) {
-                let value = try T(messagePack: &reader)
-                guard reader.isAtEnd else {
-                    try MessagePackError.throw(.trailingBytes)
-                }
-                return .success(value)
+                return .success(try deserialize(type, from: buffer))
             } catch {
                 return .failure(error)
             }
@@ -119,6 +114,33 @@ extension MessagePackSerializer {
         case .failure(let error):
             try MessagePackError.throw(error)
         }
+    }
+
+    /// Deserializes MessagePack bytes in any contiguous memory into a
+    /// ``MessagePackSerializable`` value, reading them in place rather than
+    /// copied into a `Data` first: `data.bytes` of a `Data`,
+    /// `array.span.bytes` of an `[UInt8]` from OS 26, or `slice.span.bytes`
+    /// of an `ArraySlice<UInt8>` on any OS, such as an array's `array[...]`
+    /// kept in a variable.
+    ///
+    /// Throws as the `Data` overload does.
+    @inlinable
+    public static func deserialize<T: MessagePackSerializable>(
+        _ type: T.Type = T.self, from bytes: RawSpan
+    ) throws(MessagePackError) -> T {
+        try bytes.withUnsafeBytes { (buffer) throws(MessagePackError) in try deserialize(type, from: buffer) }
+    }
+
+    @inlinable
+    static func deserialize<T: MessagePackSerializable>(
+        _ type: T.Type, from buffer: UnsafeRawBufferPointer
+    ) throws(MessagePackError) -> T {
+        var reader = MessagePackReader(buffer: buffer)
+        let value = try T(messagePack: &reader)
+        guard reader.isAtEnd else {
+            try MessagePackError.throw(.trailingBytes)
+        }
+        return value
     }
 }
 

@@ -33,13 +33,8 @@ public struct MessagePackSerializer {
     /// beyond the first top-level value.
     public static func deserialize(data: Data) throws(MessagePackError) -> MessagePackValue {
         let result: Result<MessagePackValue, MessagePackError> = data.withUnsafeBytes { buffer in
-            var parser = Parser(buffer: buffer)
             do throws(MessagePackError) {
-                let value = try parser.parseValue()
-                guard parser.offset == buffer.count else {
-                    try MessagePackError.throw(.trailingBytes)
-                }
-                return .success(value)
+                return .success(try deserialize(buffer))
             } catch {
                 return .failure(error)
             }
@@ -52,5 +47,26 @@ public struct MessagePackSerializer {
         case .failure(let error):
             try MessagePackError.throw(error)
         }
+    }
+
+    /// Deserializes MessagePack bytes in any contiguous memory into a value,
+    /// reading them in place rather than copied into a `Data` first:
+    /// `data.bytes` of a `Data`, `array.span.bytes` of an `[UInt8]` from
+    /// OS 26, or `slice.span.bytes` of an `ArraySlice<UInt8>` on any OS,
+    /// such as an array's `array[...]` kept in a variable.
+    ///
+    /// Throws ``MessagePackError/trailingBytes`` if `bytes` contains bytes
+    /// beyond the first top-level value.
+    public static func deserialize(data bytes: RawSpan) throws(MessagePackError) -> MessagePackValue {
+        try bytes.withUnsafeBytes { (buffer) throws(MessagePackError) in try deserialize(buffer) }
+    }
+
+    private static func deserialize(_ buffer: UnsafeRawBufferPointer) throws(MessagePackError) -> MessagePackValue {
+        var parser = Parser(buffer: buffer)
+        let value = try parser.parseValue()
+        guard parser.offset == buffer.count else {
+            try MessagePackError.throw(.trailingBytes)
+        }
+        return value
     }
 }

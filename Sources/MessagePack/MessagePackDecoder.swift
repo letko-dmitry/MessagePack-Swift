@@ -85,30 +85,44 @@ public struct MessagePackDecoder {
     /// Throws `DecodingError.dataCorrupted` if `data` contains bytes beyond
     /// the first top-level value.
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        try data.withUnsafeBytes { try decode(type, from: $0) }
+    }
+
+    /// Decodes a value of the given type from MessagePack bytes in any
+    /// contiguous memory, read in place rather than copied into a `Data`
+    /// first: `data.bytes` of a `Data`, `array.span.bytes` of an `[UInt8]`
+    /// from OS 26, or `slice.span.bytes` of an `ArraySlice<UInt8>` on any
+    /// OS, such as an array's `array[...]` kept in a variable.
+    ///
+    /// Throws `DecodingError.dataCorrupted` if `bytes` contains bytes beyond
+    /// the first top-level value.
+    public func decode<T: Decodable>(_ type: T.Type, from bytes: RawSpan) throws -> T {
+        try bytes.withUnsafeBytes { try decode(type, from: $0) }
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from raw: UnsafeRawBufferPointer) throws -> T {
         // The mutable decoding state lives on this frame, as the context
         // (and every container it serves) is only valid during the call, and
         // so does the memory of its coding-path stack until it outgrows it.
-        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> T in
-            try withUnsafeTemporaryAllocation(of: MessagePackCodingPath.Node.self, capacity: 16) { pathNodes in
-                var state = MessagePackDecodingContext.State(
-                    base: raw.baseAddress,
-                    count: raw.count,
-                    userInfo: userInfo,
-                    decimalDecodingStrategy: decimalDecodingStrategy,
-                    pathNodes: MessagePackStack(memory: pathNodes)
-                )
-                defer { state.pathNodes.deallocate() }
+        try withUnsafeTemporaryAllocation(of: MessagePackCodingPath.Node.self, capacity: 16) { pathNodes in
+            var state = MessagePackDecodingContext.State(
+                base: raw.baseAddress,
+                count: raw.count,
+                userInfo: userInfo,
+                decimalDecodingStrategy: decimalDecodingStrategy,
+                pathNodes: MessagePackStack(memory: pathNodes)
+            )
+            defer { state.pathNodes.deallocate() }
 
-                return try withUnsafeMutablePointer(to: &state) { state in
-                    let context = MessagePackDecodingContext(state: state)
-                    var parser = context.parser(at: 0)
-                    let value = try MessagePackDecoding.decodeValue(
-                        type, parser: &parser, context: context, path: .root)
-                    guard parser.offset == raw.count else {
-                        throw MessagePackDecoding.corrupted(.trailingBytes, context, .root, offset: parser.offset)
-                    }
-                    return value
+            return try withUnsafeMutablePointer(to: &state) { state in
+                let context = MessagePackDecodingContext(state: state)
+                var parser = context.parser(at: 0)
+                let value = try MessagePackDecoding.decodeValue(
+                    type, parser: &parser, context: context, path: .root)
+                guard parser.offset == raw.count else {
+                    throw MessagePackDecoding.corrupted(.trailingBytes, context, .root, offset: parser.offset)
                 }
+                return value
             }
         }
     }
