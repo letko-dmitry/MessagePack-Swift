@@ -677,7 +677,7 @@ enum MessagePackDecoding {
 
         if let storage = state.pointee.decodingStorage {
             do throws(MessagePackError) {
-                parser.offset = try storage.mapEnd(context)
+                parser.offset = try storage.mapEnd()
             } catch {
                 throw corrupted(error, context, path, offset: startOffset)
             }

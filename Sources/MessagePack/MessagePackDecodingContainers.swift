@@ -109,10 +109,11 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
     /// scanned in one go, as skipping those costs next to nothing, and the
     /// scan stops after the first entry whose value is an array or map,
     /// whose end is only known cheaply once it has been decoded.
-    func scanAhead(_ context: MessagePackDecodingContext) throws(MessagePackError) {
+    func scanAhead() throws(MessagePackError) {
+        let context = context
         let entryCount = entryCount
         var scannedCount = scannedCount
-        var keyOffset = try scannedEnd(context)
+        var keyOffset = try scannedEnd()
 
         while scannedCount < entryCount {
             var parser = context.parser(at: keyOffset)
@@ -162,7 +163,7 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
     /// Where the scanned entries end, which is where the next entry's key
     /// starts (or the map ends), skipping over the last scanned value the
     /// first time it is asked for undecoded.
-    private func scannedEnd(_ context: MessagePackDecodingContext) throws(MessagePackError) -> Int {
+    private func scannedEnd() throws(MessagePackError) -> Int {
         guard scannedCount > 0 else {
             return state.pointee.firstKeyOffset
         }
@@ -178,12 +179,12 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
     }
 
     /// Scans the entries no lookup reached and returns where the map ends.
-    func mapEnd(_ context: MessagePackDecodingContext) throws(MessagePackError) -> Int {
+    func mapEnd() throws(MessagePackError) -> Int {
         while scannedCount < entryCount {
-            try scanAhead(context)
+            try scanAhead()
         }
 
-        return try scannedEnd(context)
+        return try scannedEnd()
     }
 }
 
@@ -209,7 +210,7 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     var allKeys: [Key] {
         // A map that fails to scan lists the keys before the failure; the
         // failure itself surfaces when the value's end is needed.
-        _ = try? storage.mapEnd(context)
+        _ = try? storage.mapEnd()
 
         var keys: [Key] = []
         keys.reserveCapacity(storage.scannedCount)
@@ -266,7 +267,7 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
             var index = start
             repeat {
                 if index == storage.scannedCount {
-                    try storage.scanAhead(context)
+                    try storage.scanAhead()
                 }
                 if matches(keyBytes: keyBytes, key: key, at: index) {
                     return .found(index)
