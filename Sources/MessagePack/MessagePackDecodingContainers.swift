@@ -196,12 +196,6 @@ private enum MessagePackKeyLookup {
     case failed(MessagePackError)
 }
 
-/// A struct holding only its storage, which keeps everything else it needs:
-/// `KeyedDecodingContainer` stores it inline in the box it allocates, and
-/// copies it out for every call at the cost of one retain, as it would a
-/// class instance, which takes an allocation more per container. Holding
-/// its context, offset and path as well, it cost more per call than that
-/// allocation saves, for structs with a dozen fields or more.
 struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
     let storage: MessagePackKeyedStorage
 

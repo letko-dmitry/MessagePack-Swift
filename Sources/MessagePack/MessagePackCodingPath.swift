@@ -8,9 +8,6 @@
 /// until it returns. So a path costs a store into memory of the `decode`
 /// call, where a linked list costs an allocation per value. A path built only
 /// for an error is popped as soon as its keys are read.
-///
-/// A single word, so decoders holding it stay within the inline storage of
-/// an existential and copy without reference counting.
 struct MessagePackCodingPath {
     struct Node {
         let parent: Int

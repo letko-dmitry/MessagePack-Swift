@@ -370,6 +370,21 @@ struct CodableErrorTests {
 
 @Suite("Codable machinery")
 struct CodableMachineryTests {
+    /// An existential stores up to three words inline, so a key or a decoder
+    /// passed as one never allocates, and a decoder's coding path is one word
+    /// of those. `KeyedDecodingContainer` copies the container out of its box
+    /// on every call: one reference wide, that costs a retain, as a class
+    /// would without its allocation; holding its context, offset and path as
+    /// well cost more per call than the allocation saves, for structs with a
+    /// dozen fields or more.
+    @Test func internalTypesKeepTheirSizes() {
+        let word = MemoryLayout<Int>.size
+        #expect(MemoryLayout<MessagePackCodingKey>.size <= 3 * word)
+        #expect(MemoryLayout<MessagePackDirectDecoder>.size <= 3 * word)
+        #expect(MemoryLayout<MessagePackCodingPath>.size == word)
+        #expect(MemoryLayout<MessagePackKeyedDecodingContainer<MessagePackCodingKey>>.size == word)
+    }
+
     @Test func classInheritanceViaSuperEncoder() throws {
         class Base: Codable {
             var baseValue: Int

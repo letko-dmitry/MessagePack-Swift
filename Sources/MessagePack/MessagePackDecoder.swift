@@ -710,7 +710,6 @@ enum MessagePackDecoding {
 
 /// The `Decoder` handed to `Decodable.init(from:)`. Direct, unlike
 /// ``MessagePackNilDecoder``: it reads a value present in the input, in place.
-/// A three-word struct so passing it as an existential does not allocate.
 /// Also serves as its own single-value container.
 struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
     let context: MessagePackDecodingContext

@@ -4,9 +4,7 @@ import Foundation
 /// the `super` key.
 ///
 /// Integer keys defer building their `stringValue` until it is actually read
-/// (error reporting), keeping hot encode/decode paths allocation-free. The
-/// enum payload keeps the type within three words, so storing it in a
-/// `CodingKey` existential never heap-allocates.
+/// (error reporting), keeping hot encode/decode paths allocation-free.
 struct MessagePackCodingKey: CodingKey {
     private enum Value {
         case string(String)
