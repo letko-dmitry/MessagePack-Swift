@@ -27,7 +27,13 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
     struct State {
         /// The entries scanned so far, in wire order. Each value ends where
         /// the next entry's key starts, so only the last one's end is kept.
-        var entries: [Entry] = []
+        ///
+        /// In memory the storage owns and every container it serves reuses,
+        /// rather than an array, whose clearing (`replaceSubrange`) and
+        /// appends (uniqueness and capacity checks) every scan paid for.
+        var entries: UnsafeMutablePointer<Entry>?
+        var entryCapacity = 0
+        var scannedCount = 0
         /// Where the last scanned entry's value ends, or -1 until that value
         /// is decoded or skipped.
         var lastValueEnd = -1
@@ -54,12 +60,16 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
         unsafeDowncast(create(minimumCapacity: 0) { _ in State(context: context) }, to: MessagePackKeyedStorage.self)
     }
 
+    deinit {
+        state.pointee.entries?.deallocate()
+    }
+
     var context: MessagePackDecodingContext { state.pointee.context }
     var offset: Int { state.pointee.offset }
     var path: MessagePackCodingPath { state.pointee.path }
 
     var entryCount: Int { state.pointee.entryCount }
-    var scannedCount: Int { state.pointee.entries.count }
+    var scannedCount: Int { state.pointee.scannedCount }
 
     var searchIndex: Int {
         get { state.pointee.searchIndex }
@@ -67,7 +77,8 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
     }
 
     func entry(at index: Int) -> Entry {
-        state.pointee.entries[index]
+        precondition(index >= 0 && index < scannedCount, "index out of range")
+        return state.pointee.entries.unsafelyUnwrapped[index]
     }
 
     func reset(offset: Int, path: MessagePackCodingPath, firstKeyOffset: Int, entryCount: Int) {
@@ -78,8 +89,23 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
         state.pointee.searchIndex = 0
         state.pointee.lastValueEnd = -1
 
-        state.pointee.entries.removeAll(keepingCapacity: true)
-        state.pointee.entries.reserveCapacity(Swift.min(entryCount, messagePackMaxPreallocation))
+        state.pointee.scannedCount = 0
+        let capacity = Swift.min(entryCount, messagePackMaxPreallocation)
+        if state.pointee.entryCapacity < capacity {
+            reallocateEntries(capacity: capacity)
+        }
+    }
+
+    /// Moves the entries to memory for `capacity` of them.
+    @inline(never)
+    private func reallocateEntries(capacity: Int) {
+        let entries = UnsafeMutablePointer<Entry>.allocate(capacity: capacity)
+        if let old = state.pointee.entries {
+            entries.moveInitialize(from: old, count: state.pointee.scannedCount)
+            old.deallocate()
+        }
+        state.pointee.entries = entries
+        state.pointee.entryCapacity = capacity
     }
 
     /// Scans ahead: entries with scalar, string, or binary values are
@@ -106,7 +132,12 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
                 try parser.skipValue()
             }
 
-            state.pointee.entries.append(Entry(keyOffset: keyOffset, keyLength: keyLength, valueOffset: valueOffset))
+            if scannedCount == state.pointee.entryCapacity {
+                reallocateEntries(capacity: Swift.max(scannedCount * 2, 8))
+            }
+            (state.pointee.entries.unsafelyUnwrapped + scannedCount).initialize(
+                to: Entry(keyOffset: keyOffset, keyLength: keyLength, valueOffset: valueOffset))
+            state.pointee.scannedCount = scannedCount &+ 1
             if isContainer {
                 state.pointee.lastValueEnd = -1
                 return
@@ -135,9 +166,10 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
     /// starts (or the map ends), skipping over the last scanned value the
     /// first time it is asked for undecoded.
     private func scannedEnd(_ context: MessagePackDecodingContext) throws(MessagePackError) -> Int {
-        guard let last = state.pointee.entries.last else {
+        guard scannedCount > 0 else {
             return state.pointee.firstKeyOffset
         }
+        let last = entry(at: scannedCount &- 1)
 
         if state.pointee.lastValueEnd < 0 {
             var parser = context.parser(at: last.valueOffset)
