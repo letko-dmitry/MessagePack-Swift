@@ -152,6 +152,7 @@ struct CodableDictionaryStrategyTests {
         }
         #expect(
             try MessagePackSerializer.deserialize(T.self, from: mapEncoder.encode(value)) == value,
-            sourceLocation: sourceLocation)
+            sourceLocation: sourceLocation
+        )
     }
 }

@@ -283,7 +283,8 @@ struct CodableContainerHeaderTests {
                     .string("values"): .array((0..<(index * 4)).map { .uint32(UInt32($0)) }),
                     .string("map"): Self.map(index),
                 ])
-            })
+            }
+        )
 
         #expect(try MessagePackEncoder().encode(CodableValue(value)) == MessagePackSerializer.serialize(value: value))
     }
@@ -293,7 +294,7 @@ struct CodableContainerHeaderTests {
     @Test func deepNestingOutgrowsTheEncoderStacks() throws {
         var value = MessagePackValue.array([.uint8(1)])
         for depth in 0..<100 {
-            value = depth % 2 == 0 ? .map([.string("level\(depth)"): value]) : .array([.nil, value])
+            value = depth.isMultiple(of: 2) ? .map([.string("level\(depth)"): value]) : .array([.nil, value])
         }
 
         #expect(try MessagePackEncoder().encode(CodableValue(value)) == MessagePackSerializer.serialize(value: value))
@@ -361,7 +362,9 @@ struct HostileInputTests {
                 Probe(
                     id: 1, name: "x", values: [1.5, 2], nested: ["a": 1],
                     children: [Probe(id: 2, name: nil, values: nil, nested: nil, children: [], decimal: 0.5)],
-                    decimal: nil))
+                    decimal: nil
+                )
+            ),
         ]
 
         for _ in 0..<20_000 {

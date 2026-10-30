@@ -21,7 +21,8 @@ extension MessagePackEncodingContext {
                 EncodingError.Context(
                     codingPath: codingPath(path()),
                     debugDescription: "Number \(value) does not fit in a 64-bit MessagePack integer"
-                ))
+                )
+            )
         }
     }
 }

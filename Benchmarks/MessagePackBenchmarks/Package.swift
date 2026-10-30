@@ -31,7 +31,7 @@ let package = Package(
             ],
             plugins: [
                 .plugin(name: "BenchmarkPlugin", package: "benchmark"),
-            ],
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]

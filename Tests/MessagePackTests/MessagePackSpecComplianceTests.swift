@@ -246,7 +246,8 @@ struct Map32Tests {
         let entries = Dictionary(
             uniqueKeysWithValues: (0..<65535).map {
                 (MessagePackValue.string("k\($0)"), MessagePackValue.bool(true))
-            })
+            }
+        )
         let bytes = try serializedBytes(.map(entries))
         #expect(bytes.prefix(3) == [0xde, 0xff, 0xff])
         #expect(try deserialize(bytes) == .map(entries))
@@ -256,7 +257,8 @@ struct Map32Tests {
         let entries = Dictionary(
             uniqueKeysWithValues: (0..<65536).map {
                 (MessagePackValue.string("k\($0)"), MessagePackValue.bool(true))
-            })
+            }
+        )
         let bytes = try serializedBytes(.map(entries))
         #expect(bytes.prefix(5) == [0xdf, 0x00, 0x01, 0x00, 0x00])
         #expect(try deserialize(bytes) == .map(entries))

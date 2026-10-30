@@ -27,6 +27,7 @@ private struct Nested: Codable, Equatable {
         var value: Int
         var label: String
     }
+
     var inner: Inner
     var inners: [Inner]
     var lookup: [String: Inner]
@@ -96,12 +97,15 @@ struct CodableRoundTripTests {
         try roundTrip(
             Person(
                 id: 1, name: "Alice", email: "alice@example.com",
-                isActive: true, score: 99.5, tags: ["a", "b"]))
+                isActive: true, score: 99.5, tags: ["a", "b"]
+            )
+        )
     }
 
     @Test func structWithNilOptional() throws {
         try roundTrip(
-            Person(id: 2, name: "Bob", email: nil, isActive: false, score: 0, tags: []))
+            Person(id: 2, name: "Bob", email: nil, isActive: false, score: 0, tags: [])
+        )
     }
 
     @Test func nestedStructs() throws {
@@ -110,7 +114,9 @@ struct CodableRoundTripTests {
             Nested(
                 inner: inner,
                 inners: [inner, Nested.Inner(value: 20, label: "twenty")],
-                lookup: ["a": inner, "b": Nested.Inner(value: 30, label: "thirty")]))
+                lookup: ["a": inner, "b": Nested.Inner(value: 30, label: "thirty")]
+            )
+        )
     }
 
     @Test func arrays() throws {
@@ -175,15 +181,17 @@ struct CodableRoundTripTests {
         let value = Wrapper(
             date: Date(timeIntervalSince1970: 1_000_000),
             data: Data([1, 2, 3]),
-            timestamp: MessagePackTimestamp(seconds: 5, nanoseconds: 6))
+            timestamp: MessagePackTimestamp(seconds: 5, nanoseconds: 6)
+        )
         try roundTrip(value)
     }
 
     @Test func largeStructArray() throws {
         let people = (0..<500).map {
             Person(
-                id: $0, name: "person\($0)", email: $0 % 3 == 0 ? nil : "p\($0)@example.com",
-                isActive: $0 % 2 == 0, score: Double($0) * 0.5, tags: ["t\($0 % 5)"])
+                id: $0, name: "person\($0)", email: $0.isMultiple(of: 3) ? nil : "p\($0)@example.com",
+                isActive: $0.isMultiple(of: 2), score: Double($0) * 0.5, tags: ["t\($0 % 5)"]
+            )
         }
         try roundTrip(people)
     }
@@ -204,14 +212,16 @@ struct CodableInteropTests {
         // serializer's smallest-format encoding of the equivalent tree.
         let encoded = try MessagePackEncoder().encode([1, 500, -3])
         let serialized = try MessagePackSerializer.serialize(
-            value: .array([.int64(1), .int64(500), .int64(-3)]))
+            value: .array([.int64(1), .int64(500), .int64(-3)])
+        )
         #expect(encoded == serialized)
     }
 
     @Test func encoderOutputIsDeserializable() throws {
         let person = Person(
             id: 7, name: "Carol", email: "c@example.com", isActive: true, score: 1.25,
-            tags: ["x"])
+            tags: ["x"]
+        )
         let data = try MessagePackEncoder().encode(person)
         let value = try MessagePackSerializer.deserialize(data: data)
         let map = try #require(value.mapValue)
@@ -234,13 +244,15 @@ struct CodableInteropTests {
         let data = try MessagePackSerializer.serialize(value: value)
         let person = try MessagePackDecoder().decode(Person.self, from: data)
         #expect(person == Person(
-            id: 9, name: "Dave", email: nil, isActive: false, score: 2.5, tags: ["a", "b"]))
+            id: 9, name: "Dave", email: nil, isActive: false, score: 2.5, tags: ["a", "b"]
+        ))
     }
 
     @Test func intKeyedWireMap() throws {
         // Maps with integer wire keys can be decoded through Int coding keys.
         let data = try MessagePackSerializer.serialize(
-            value: .map([.uint8(1): .string("one"), .uint8(2): .string("two")]))
+            value: .map([.uint8(1): .string("one"), .uint8(2): .string("two")])
+        )
         let decoded = try MessagePackDecoder().decode([Int: String].self, from: data)
         #expect(decoded == [1: "one", 2: "two"])
     }
@@ -388,6 +400,7 @@ struct CodableMachineryTests {
     @Test func classInheritanceViaSuperEncoder() throws {
         class Base: Codable {
             var baseValue: Int
+
             init(baseValue: Int) { self.baseValue = baseValue }
         }
         final class Derived: Base {
@@ -414,7 +427,8 @@ struct CodableMachineryTests {
         }
 
         let data = try MessagePackEncoder().encode(
-            Derived(baseValue: 42, derivedValue: "hello"))
+            Derived(baseValue: 42, derivedValue: "hello")
+        )
         let decoded = try MessagePackDecoder().decode(Derived.self, from: data)
         #expect(decoded.baseValue == 42)
         #expect(decoded.derivedValue == "hello")
@@ -429,7 +443,8 @@ struct CodableMachineryTests {
                 .string("id"): .uint8(1),
                 .string("isActive"): .bool(true),
                 .string("name"): .string("n"),
-            ]))
+            ])
+        )
         let person = try MessagePackDecoder().decode(Person.self, from: data)
         #expect(person.id == 1)
         #expect(person.email == nil)
@@ -467,12 +482,12 @@ struct CodableMachineryTests {
     @Test func decoderUserInfoIsVisible() throws {
         struct Probe: Decodable {
             init(from decoder: Decoder) throws {
-                let key = CodingUserInfoKey(rawValue: "probe")!
+                let key = try #require(CodingUserInfoKey(rawValue: "probe"))
                 #expect(decoder.userInfo[key] as? String == "value")
             }
         }
         var decoder = MessagePackDecoder()
-        decoder.userInfo[CodingUserInfoKey(rawValue: "probe")!] = "value"
+        decoder.userInfo[try #require(CodingUserInfoKey(rawValue: "probe"))] = "value"
         _ = try decoder.decode(Probe.self, from: MessagePackEncoder().encode([String: Int]()))
     }
 
@@ -492,7 +507,8 @@ struct CodableMachineryTests {
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
                 let wrapper = try container.nestedContainer(
-                    keyedBy: WrapperKeys.self, forKey: .wrapper)
+                    keyedBy: WrapperKeys.self, forKey: .wrapper
+                )
                 x = try wrapper.decode(Int.self, forKey: .x)
                 var listContainer = try container.nestedUnkeyedContainer(forKey: .list)
                 var list: [Int] = []
@@ -520,13 +536,16 @@ struct CodableMachineryTests {
             struct AnyKey: CodingKey {
                 var stringValue: String
                 var intValue: Int?
+
                 init?(stringValue: String) { self.stringValue = stringValue }
                 init?(intValue: Int) {
                     self.stringValue = String(intValue)
                     self.intValue = intValue
                 }
             }
+
             var keys: [String]
+
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: AnyKey.self)
                 keys = container.allKeys.map(\.stringValue).sorted()

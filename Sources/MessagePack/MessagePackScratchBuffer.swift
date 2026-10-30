@@ -32,7 +32,7 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
     @usableFromInline
     init(memory: UnsafeMutableRawBufferPointer) {
         // grow() doubles the capacity, so zero would never grow.
-        precondition(memory.count > 0, "a buffer needs room for a byte")
+        precondition(!memory.isEmpty, "a buffer needs room for a byte")
         self.base = memory.baseAddress.unsafelyUnwrapped
         self.capacity = memory.count
         self.isOnHeap = false
@@ -103,12 +103,12 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
         let destination = base + offset
         // Keys and most strings are a few bytes long, for which two
         // overlapping loads and stores beat a call to `memmove`.
-        if count >= 8 && count <= 16 {
+        if count >= 8, count <= 16 {
             let head = pointer.loadUnaligned(as: UInt64.self)
             let tail = pointer.loadUnaligned(fromByteOffset: count &- 8, as: UInt64.self)
             destination.storeBytes(of: head, as: UInt64.self)
             destination.storeBytes(of: tail, toByteOffset: count &- 8, as: UInt64.self)
-        } else if count >= 4 && count < 8 {
+        } else if count >= 4, count < 8 {
             let head = pointer.loadUnaligned(as: UInt32.self)
             let tail = pointer.loadUnaligned(fromByteOffset: count &- 4, as: UInt32.self)
             destination.storeBytes(of: head, as: UInt32.self)
@@ -129,7 +129,7 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
     mutating func incrementContainerCount(at position: Int) {
         let header = base.load(fromByteOffset: position, as: UInt8.self)
         // A fixmap (0x80...0x8f) or fixarray (0x90...0x9f) below 15 entries.
-        if header & 0x0f != 0x0f && header <= 0x9f {
+        if header & 0x0f != 0x0f, header <= 0x9f {
             base.storeBytes(of: header &+ 1, toByteOffset: position, as: UInt8.self)
         } else {
             incrementWideContainerCount(at: position)
@@ -160,7 +160,8 @@ struct MessagePackScratchBuffer: MessagePackFormatSink {
             let count = UInt32(bigEndian: base.loadUnaligned(fromByteOffset: position + 1, as: UInt32.self))
             precondition(
                 UInt64(count) < UInt64(MessagePackLimits.maxLength),
-                "MessagePack containers are limited to 2^32-1 entries")
+                "MessagePack containers are limited to 2^32-1 entries"
+            )
             base.storeBytes(of: (count + 1).bigEndian, toByteOffset: position + 1, as: UInt32.self)
         }
     }

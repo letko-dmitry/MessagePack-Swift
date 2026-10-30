@@ -142,10 +142,11 @@ struct MessagePackEncodingState {
     /// The `Dictionary` type ``MessagePackEncodingContext/encodeDictionary(_:path:)``
     /// writes next, and the types checked for one; see
     /// ``dictionaryConformance(of:)``.
-    var dictionaryType: (any MessagePackEncodableDictionary.Type)?
+    var dictionaryType: any MessagePackEncodableDictionary.Type?
     var dictionaryTypes: (DictionaryType?, DictionaryType?, DictionaryType?, DictionaryType?)
     var dictionaryTypeCount = 0
-    typealias DictionaryType = (type: ObjectIdentifier, conformance: (any MessagePackEncodableDictionary.Type)?)
+
+    typealias DictionaryType = (type: ObjectIdentifier, conformance: any MessagePackEncodableDictionary.Type?)
 
     /// The conformance of `type` to ``MessagePackEncodableDictionary``, if
     /// any, remembered for the last four types checked, each replaced in
@@ -424,7 +425,8 @@ struct MessagePackEncodingContext {
     @inline(never)
     func encodeDictionary(_ value: UnsafeRawPointer, path: MessagePackEncodingPath) throws {
         try state.pointee.dictionaryType.unsafelyUnwrapped.encodeEntries(
-            at: value, context: self, path: path)
+            at: value, context: self, path: path
+        )
     }
 
     // `Date` and `Decimal` are written out of line, keeping these resilient
@@ -504,7 +506,8 @@ struct MessagePackEncodingContext {
                 codingPath: codingPath,
                 debugDescription:
                     "Date (timeIntervalSince1970: \(interval)) cannot be represented as a MessagePack timestamp"
-            ))
+            )
+        )
     }
 
     @inline(never)
@@ -514,9 +517,9 @@ struct MessagePackEncodingContext {
             EncodingError.Context(
                 codingPath: codingPath,
                 debugDescription: "Value of type \(type) did not encode any values"
-            ))
+            )
+        )
     }
-
 }
 
 // MARK: - Encoder
@@ -570,4 +573,3 @@ struct MessagePackDirectEncoder: Encoder {
         MessagePackSingleValueEncodingContainer(context: context, path: path, start: start)
     }
 }
-

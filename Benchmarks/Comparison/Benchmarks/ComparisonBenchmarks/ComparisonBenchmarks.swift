@@ -1,9 +1,9 @@
 import A2MessagePack
 import Benchmark
-import Foundation
 import DMMessagePackCore  // fumoboy007/msgpack-swift (module aliased from its MessagePack)
-import MPMessagePack  // gabriel/MPMessagePack
+import Foundation
 import MessagePack
+import MPMessagePack  // gabriel/MPMessagePack
 import SwiftMsgpack  // nnabeyang/swift-msgpack
 
 // Cross-library comparison on shared logical fixtures. Every library encodes
@@ -70,7 +70,8 @@ private let ourPeopleTree = MessagePack.MessagePackValue.array(
             .string("score"): .float64(person.score),
             .string("tags"): .array(person.tags.map { .string($0) }),
         ])
-    })
+    }
+)
 
 private let ourIntTree = MessagePack.MessagePackValue.array(
     intValues.map { .int64(Int64($0)) }
@@ -90,7 +91,8 @@ private let a2PeopleTree = A2MessagePack.MessagePackValue.array(
             .string("score"): .double(person.score),
             .string("tags"): .array(person.tags.map { .string($0) }),
         ])
-    })
+    }
+)
 
 private let a2IntTree = A2MessagePack.MessagePackValue.array(
     intValues.map { .int(Int64($0)) }

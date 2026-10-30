@@ -1,0 +1,169 @@
+# SwiftFormat configuration for this repository.
+#
+# RULES URL: https://github.com/nicklockwood/SwiftFormat/blob/main/Rules.md
+# OPTIONS:   swiftformat --options
+# RULE INFO: swiftformat --ruleinfo <name>
+#
+# SwiftFormat FIXES, SwiftLint REPORTS (.swiftlint.yml). A rule is enabled here when it repairs something the
+# linter would report, and disabled when it would rewrite code into a lint violation, against a style this code
+# keeps on purpose, or into a different public API.
+#
+# Every option and every --disable below was measured against this tree (SwiftFormat 0.64.4, 2026-10-30): the
+# number in parentheses is how many sites the default would have rewritten.
+#
+# Run it with Tools/SwiftFormat/format.sh, before Tools/SwiftLint/lint.sh.
+
+
+# --- Options ------------------------------------------------------------------------------------
+
+# --swift-version gates the rewrites a rule may emit: it is the oldest compiler that builds this package
+# (swift-tools-version 6.4). At 6.4 `redundantParens` writes an optional existential as `any P?` instead of
+# `(any P)?`, the same type in either language mode.
+--swift-version 6.4
+--language-mode 6
+
+# Multi-line collection literals end with a comma (74 did, 13 did not); argument and parameter lists do not
+# (4 did, all in the manifests). The default, `always`, adds one to every wrapped call. (180)
+--trailing-commas collections-only
+
+# Format bytes are written in lowercase hex, `0xcc`. (476)
+--hex-literal-case lowercase
+
+# The default grouping thresholds strip the underscores from literals such as `10_000`. (25)
+--decimal-grouping ignore
+--hex-grouping ignore
+--binary-grouping ignore
+--octal-grouping ignore
+
+# Access modifiers sit on the declarations, not on the extension. (24, in 3 files)
+--extension-acl on-declarations
+
+# Test functions are named in camelCase, not with raw identifiers. (253)
+--test-case-name-format preserve
+
+# The code writes `case .foo(let bar)`, not `case let .foo(bar)`. (hoist: 120; inline: 10)
+#
+# KNOWN DEFECT: when the patterns of one `catch` or `case` sit on separate lines, the rewrite leaves the
+# continuation lines at column 1, which SwiftLint's `indentation_width` reports. Re-indent them by hand once;
+# the next pass leaves them alone.
+--pattern-let inline
+
+# `0..<count`, with no spaces. (96)
+--ranges no-space
+
+# public import -> package import -> import, alphabetical within each group; each blank-line-separated block
+# (the tests' `@testable import`) is sorted on its own. (hoist: 43)
+--import-grouping access-control,alpha
+--hoist-imports preserve
+
+# A wrapped call closes on a line of its own, as SwiftLint's multiline_arguments_brackets asks. Most did; the
+# 126 that closed on their last argument's line were moved when this file was added.
+--closing-paren balanced
+
+# Any wrap value other than `preserve` can collapse a bracket back onto its content line, which
+# multiline_literal_brackets, multiline_parameters_brackets, multiline_arguments_brackets and
+# vertical_parameter_alignment_on_call report. These are the current defaults, pinned so a future default
+# change cannot start a fight with the linter.
+--wrap-arguments preserve
+--wrap-collections preserve
+--wrap-conditions preserve
+--wrap-type-aliases preserve
+--wrap-return-type preserve
+--wrap-effects preserve
+
+
+# --- Excludes -----------------------------------------------------------------------------------
+#
+# Mirrors .gitignore. Hidden directories (.build, .swiftpm) are skipped anyway.
+
+--exclude DerivedData,Packages
+
+
+# --- Rules enabled beyond the defaults ----------------------------------------------------------
+
+# Each clears the SwiftLint rule named after it.
+--enable isEmpty                  # empty_count, which reports at ERROR severity
+--enable preferContains           # contains_over_filter_is_empty, contains_over_first_not_nil
+--enable preferFirstWhere         # first_where
+--enable preferCountWhere         # contains_over_filter_count
+--enable preferMinOverSorted      # sorted_first_last, for .first only
+--enable preferFlatMap            # flatmap_over_map_reduce, reduce_into
+
+# No SwiftLint pairing: each repairs a construct the first time somebody writes it, at no risk to working code.
+--enable emptyExtensions          # an extension that conforms to something is left alone
+--enable preferSwiftStringAPI     # `replacingOccurrences(of:with:)` -> `replacing(_:with:)`
+--enable singlePropertyPerLine    # `let a, b: Int` -> one declaration per line
+--enable commonTypos              # comments and private names only
+--enable preferSwiftTesting       # converted the macro tests too: assertMacroExpansion still records its
+                                  # failures as Swift Testing issues (checked by breaking an expansion)
+
+
+# --- Disabled rules -----------------------------------------------------------------------------
+
+# Turns `public struct MessagePackSerializer`, which only hosts static members, into an enum: a source and ABI
+# break for every 0.1.0 user. SwiftLint's convenience_type stays off for the same reason. (1)
+--disable enumNamespaces
+
+# Moves the opening brace of a multi-line statement onto its own line, which SwiftLint's `opening_brace`
+# reports; on a multi-line `guard` it leaves `else` alone at the end of the condition. (2)
+--disable wrapMultilineStatementBraces
+
+# Indentation is Xcode's (Ctrl+I) and is checked by SwiftLint's `indentation_width`. SwiftFormat indents a
+# wrapped operand one level deeper than Xcode does, so the two would ping-pong. (492)
+--disable indent
+
+# With `indent` off, a rule that changes nesting depth leaves the body at its old indentation. (0)
+--disable redundantClosure
+
+# A raw value is what gets encoded: once it is implicit, renaming the case silently changes it. SwiftLint's
+# redundant_string_enum_value is disabled for the same reason. (0)
+--disable redundantRawValues
+
+# The tests spell `Optional<Int>.none`, and a `Swift.Optional<Int>` field, on purpose: the macro must recognise
+# the long form. SwiftLint's syntactic_sugar is disabled to match. (5)
+--disable typeSugar
+
+# Writes `public nonisolated`, while SwiftLint's `modifier_order` wants `nonisolated public`. (0)
+--disable modifierOrder
+
+# Removes the blank line before the tests' `@testable import` block. (13)
+--disable blankLinesBetweenImports
+
+# Promotes `//` comments above declarations into `///` documentation; those comments explain how the code
+# works, they are not API documentation. (51)
+--disable docComments
+
+# Collapses the two spaces this code writes before a trailing comment, `writeByte(0xd6)  // fixext 4`. (97)
+--disable consecutiveSpaces
+
+# Deliberate style this code writes consistently.
+--disable redundantSelf            # (26)  `self.` in initializers
+--disable wrapPropertyBodies       # (69)  one-line computed properties
+--disable conditionalAssignment    # (27)  a declaration followed by the `switch` that assigns it
+--disable unusedArguments          # (22)  protocol witnesses, where the name documents the argument
+--disable wrapIfStatementBodies    # (68)  one-line early exits and the conformance-cache lookups
+--disable wrapIfExpressionBodies   # (32)  the same for `if case … { true } else { false }`
+--disable preferForLoop            # (0)   converts only multi-line forEach, leaving the code more mixed
+--disable hoistTry                 # (174) moves `try` onto calls that do not throw
+--disable opaqueGenericParameters  # (13)  rewrites named generics to `some`, public API among them
+--disable wrapFunctionBodies       # (139) the one-line Codable container witnesses
+--disable repeatedGuard            # (2)   each precondition keeps its own guard
+
+
+# --- Audited and rejected -----------------------------------------------------------------------
+#
+# Off by default, so no --disable line is needed; this is the record of why.
+#
+#   preferLazyMap              `map { … }.joined()` -> `lazy.map { … }.joined()` changes how the code
+#                              evaluates; in the library that is a measurement, not a format. (2)
+#   noExplicitOwnership        Strips `borrowing`/`consuming`, which this code places by measurement. (9)
+#   redundantSendable          Inference does not cross a module boundary, so stripping an explicit
+#                              `Sendable` from a public type changes its API. (0)
+#   acronyms, preferFinalClasses, redundantOverload, unusedPrivateDeclarations
+#                              Rename, seal, merge or delete declarations without seeing their clients. (0)
+#   forWhere                   Moves `isKnownUniquelyReferenced(&…)` into a `where` clause; SwiftLint's
+#                              for_where is configured to accept a loop used as a filter. (1 loop)
+#   Too much churn to be this code's style: organizeDeclarations (1264), markTypes (221), wrapCaseBodies (119),
+#   wrapGuardStatementBodies (111), blankLinesAfterGuardStatements (104), blankLineAfterSwitchCase (84),
+#   propertyTypes (76), wrapSwitchCases (25), preferExplicitFalse (21), wrapEnumCases (15),
+#   sortSwitchCases (8), ifExpressions (2).

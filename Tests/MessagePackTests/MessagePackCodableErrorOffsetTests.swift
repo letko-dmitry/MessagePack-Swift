@@ -25,11 +25,10 @@ private func decodingContext(_ body: () throws -> Void) -> DecodingError.Context
     do {
         try body()
         return nil
-    } catch let DecodingError.typeMismatch(_, context),
-        let DecodingError.valueNotFound(_, context),
-        let DecodingError.keyNotFound(_, context),
-        let DecodingError.dataCorrupted(context)
-    {
+    } catch DecodingError.typeMismatch(_, let context),
+        DecodingError.valueNotFound(_, let context),
+        DecodingError.keyNotFound(_, let context),
+        DecodingError.dataCorrupted(let context) {
         return context
     } catch {
         return nil
@@ -53,7 +52,7 @@ struct CodableDecodingErrorOffsetTests {
         do {
             _ = try MessagePackDecoder().decode(Leaf.self, from: data)
             Issue.record("Expected a type mismatch")
-        } catch let DecodingError.typeMismatch(_, context) {
+        } catch DecodingError.typeMismatch(_, let context) {
             #expect(context.debugDescription.hasSuffix("at byte offset 7"))
         }
     }
@@ -148,7 +147,8 @@ struct CodableDecodingErrorOffsetTests {
             let context = decodingContext { try test.decode(data) }
             #expect(
                 context?.debugDescription.hasSuffix("at byte offset \(test.offset)") == true,
-                "\(test.name): \(context?.debugDescription ?? "no error")")
+                "\(test.name): \(context?.debugDescription ?? "no error")"
+            )
             #expect(context.map { keys($0.codingPath) } == test.path, "\(test.name)")
         }
     }

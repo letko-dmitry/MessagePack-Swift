@@ -103,7 +103,8 @@ extension MessagePackDecoding {
                 parser.offset = elementStart
                 throw decodingError(
                     error, type: E.self, parser: parser, context: context,
-                    path: { context.path(path(), appendingIndex: index) })
+                    path: { context.path(path(), appendingIndex: index) }
+                )
             }
         }
         return result
@@ -179,7 +180,9 @@ extension Array: MessagePackDecodableArray where Element: Decodable {
                 (elements.baseAddress.unsafelyUnwrapped + initializedCount).initialize(
                     to: try MessagePackDecoding.decodeValue(
                         Element.self, parser: &parser, context: context,
-                        path: context.path(path, appendingIndex: initializedCount)))
+                        path: context.path(path, appendingIndex: initializedCount)
+                    )
+                )
                 initializedCount &+= 1
             }
         }
@@ -238,7 +241,8 @@ extension MessagePackDecoding {
             return try withUnsafeTemporaryAllocation(of: T.self, capacity: 1) { value in
                 let value = value.baseAddress.unsafelyUnwrapped
                 try arrayType.decodeElements(
-                    count: elementCount, parser: &parser, context: context, path: path, into: value)
+                    count: elementCount, parser: &parser, context: context, path: path, into: value
+                )
                 return value.move()
             }
         } catch {

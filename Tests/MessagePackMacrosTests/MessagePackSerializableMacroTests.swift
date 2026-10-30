@@ -1,7 +1,8 @@
+import Foundation
 import SwiftSyntax
 import SwiftSyntaxMacros
 import SwiftSyntaxMacrosTestSupport
-import XCTest
+import Testing
 
 @testable import MessagePackMacros
 
@@ -11,8 +12,8 @@ private let testMacros: [String: Macro.Type] = [
     "MessagePackKey": MessagePackKeyMacro.self,
 ]
 
-final class MessagePackSerializableMacroTests: XCTestCase {
-    func testSimpleStruct() {
+final class MessagePackSerializableMacroTests {
+    @Test func simpleStruct() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -82,7 +83,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
         )
     }
 
-    func testOptionalAndDefaultFields() {
+    @Test func optionalAndDefaultFields() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -144,7 +145,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
         )
     }
 
-    func testKeyIgnoredAndConstantFields() {
+    @Test func keyIgnoredAndConstantFields() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -203,7 +204,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
         )
     }
 
-    func testGenericParametersAreConstrained() {
+    @Test func genericParametersAreConstrained() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -273,7 +274,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
         )
     }
 
-    func testPublicStructGeneratesPublicMembers() {
+    @Test func publicStructGeneratesPublicMembers() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -326,7 +327,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
         )
     }
 
-    func testEmptyStruct() {
+    @Test func emptyStruct() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -357,7 +358,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
     /// Keys sharing their first 8 (and 16) bytes force the matcher to branch
     /// on second and third chunks, and same-length distinct keys share one
     /// length case with a chunk-value switch.
-    func testSharedPrefixKeysBuildChunkTrie() {
+    @Test func sharedPrefixKeysBuildChunkTrie() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -461,7 +462,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
         )
     }
 
-    func testMissingTypeAnnotationDiagnoses() {
+    @Test func missingTypeAnnotationDiagnoses() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -477,13 +478,14 @@ final class MessagePackSerializableMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message: MessagePackMacroDiagnostic.missingTypeAnnotation.message,
-                    line: 3, column: 9)
+                    line: 3, column: 9
+                ),
             ],
             macros: testMacros
         )
     }
 
-    func testNotAStructDiagnoses() {
+    @Test func notAStructDiagnoses() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -498,13 +500,14 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                 """,
             diagnostics: [
                 DiagnosticSpec(
-                    message: MessagePackMacroDiagnostic.notAStruct.message, line: 1, column: 1)
+                    message: MessagePackMacroDiagnostic.notAStruct.message, line: 1, column: 1
+                ),
             ],
             macros: testMacros
         )
     }
 
-    func testClassDiagnoses() {
+    @Test func classDiagnoses() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -519,13 +522,14 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                 """,
             diagnostics: [
                 DiagnosticSpec(
-                    message: MessagePackMacroDiagnostic.notAStruct.message, line: 1, column: 1)
+                    message: MessagePackMacroDiagnostic.notAStruct.message, line: 1, column: 1
+                ),
             ],
             macros: testMacros
         )
     }
 
-    func testDuplicateKeyDiagnoses() {
+    @Test func duplicateKeyDiagnoses() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -543,13 +547,14 @@ final class MessagePackSerializableMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message: MessagePackMacroDiagnostic.duplicateKey("b").message,
-                    line: 4, column: 9)
+                    line: 4, column: 9
+                ),
             ],
             macros: testMacros
         )
     }
 
-    func testKeyOnMultipleBindingsDiagnoses() {
+    @Test func keyOnMultipleBindingsDiagnoses() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -567,16 +572,18 @@ final class MessagePackSerializableMacroTests: XCTestCase {
                 // declarations; our diagnostic explains the actual problem.
                 DiagnosticSpec(
                     message: "peer macro can only be applied to a single variable",
-                    line: 3, column: 5),
+                    line: 3, column: 5
+                ),
                 DiagnosticSpec(
                     message: MessagePackMacroDiagnostic.keyOnMultipleBindings.message,
-                    line: 3, column: 5),
+                    line: 3, column: 5
+                ),
             ],
             macros: testMacros
         )
     }
 
-    func testIgnoredWithoutDefaultDiagnoses() {
+    @Test func ignoredWithoutDefaultDiagnoses() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -594,13 +601,14 @@ final class MessagePackSerializableMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message: MessagePackMacroDiagnostic.ignoredPropertyNeedsDefault.message,
-                    line: 4, column: 29)
+                    line: 4, column: 29
+                ),
             ],
             macros: testMacros
         )
     }
 
-    func testIgnoredOptionalVarNeedsNoDefault() {
+    @Test func ignoredOptionalVarNeedsNoDefault() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -655,7 +663,7 @@ final class MessagePackSerializableMacroTests: XCTestCase {
         )
     }
 
-    func testTuplePatternDiagnoses() {
+    @Test func tuplePatternDiagnoses() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -671,13 +679,14 @@ final class MessagePackSerializableMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message: MessagePackMacroDiagnostic.unsupportedPattern.message,
-                    line: 3, column: 9)
+                    line: 3, column: 9
+                ),
             ],
             macros: testMacros
         )
     }
 
-    func testInterpolatedKeyDiagnoses() {
+    @Test func interpolatedKeyDiagnoses() {
         assertMacroExpansion(
             """
             @MessagePackSerializable
@@ -693,7 +702,8 @@ final class MessagePackSerializableMacroTests: XCTestCase {
             diagnostics: [
                 DiagnosticSpec(
                     message: MessagePackMacroDiagnostic.invalidKeyArgument.message,
-                    line: 3, column: 5)
+                    line: 3, column: 5
+                ),
             ],
             macros: testMacros
         )

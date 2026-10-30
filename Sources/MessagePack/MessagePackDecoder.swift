@@ -156,7 +156,8 @@ public struct MessagePackDecoder {
                 let context = MessagePackDecodingContext(state: state)
                 var parser = context.parser(at: 0)
                 let value = try MessagePackDecoding.decodeValue(
-                    type, parser: &parser, context: context, path: .root)
+                    type, parser: &parser, context: context, path: .root
+                )
                 guard parser.offset == raw.count else {
                     throw MessagePackDecoding.corrupted(.trailingBytes, context, .root, offset: parser.offset)
                 }
@@ -225,7 +226,8 @@ struct MessagePackDecodingContext {
         /// checked; see ``arrayConformance(of:)``.
         var arrayTypes: (ArrayType?, ArrayType?, ArrayType?, ArrayType?)
         var arrayTypeCount = 0
-        typealias ArrayType = (type: ObjectIdentifier, conformance: (any MessagePackDecodableArray.Type)?)
+
+        typealias ArrayType = (type: ObjectIdentifier, conformance: any MessagePackDecodableArray.Type?)
     }
 
     /// The decoding state, in the frame of
@@ -309,7 +311,8 @@ enum MessagePackDecoding {
                 codingPath: context.codingPath(popping: path),
                 debugDescription: "Invalid MessagePack data: \(error)\(at(offset))",
                 underlyingError: error
-            ))
+            )
+        )
     }
 
     /// The byte position in error messages, like `JSONDecoder`'s line and
@@ -338,7 +341,8 @@ enum MessagePackDecoding {
                 DecodingError.Context(
                     codingPath: context.codingPath(popping: path),
                     debugDescription: "Cannot decode \(type) -- found nil value instead\(at(parser.offset))"
-                ))
+                )
+            )
         }
         return DecodingError.typeMismatch(
             type,
@@ -346,7 +350,8 @@ enum MessagePackDecoding {
                 codingPath: context.codingPath(popping: path),
                 debugDescription:
                     "Expected \(type) but found MessagePack format byte 0x\(String(format, radix: 16))\(at(parser.offset))"
-            ))
+            )
+        )
     }
 
     /// Translates a primitive failure into a `DecodingError` with full
@@ -362,7 +367,8 @@ enum MessagePackDecoding {
             return wrongType(type, parser, context, path())
         case .invalid(let message):
             return DecodingError.dataCorrupted(
-                DecodingError.Context(codingPath: context.codingPath(popping: path), debugDescription: message + at(parser.offset)))
+                DecodingError.Context(codingPath: context.codingPath(popping: path), debugDescription: message + at(parser.offset))
+            )
         case .corrupted(let error):
             return corrupted(error, context, path(), offset: parser.offset)
         }
@@ -468,7 +474,7 @@ enum MessagePackDecoding {
         let narrowed = Float(value)
         // A finite float64 must stay finite as Float; JSONDecoder likewise
         // rejects numbers that do not fit the requested type.
-        if narrowed.isInfinite && value.isFinite {
+        if narrowed.isInfinite, value.isFinite {
             throw outOfRange(value, Float.self)
         }
         return narrowed
@@ -617,8 +623,7 @@ enum MessagePackDecoding {
         let foundation = MessagePackFoundationTypes.shared
         if ObjectIdentifier(T.self) == foundation.date {
             let strategy = context.state.pointee.dateDecodingStrategy
-            return try readScalarOrRewind(Date.self, &parser, startOffset, context, path) {
-                (parser: inout Parser) throws(MessagePackDecodeFailure) -> Date in
+            return try readScalarOrRewind(Date.self, &parser, startOffset, context, path) { (parser: inout Parser) throws(MessagePackDecodeFailure) -> Date in
                 try readDate(&parser, strategy: strategy)
             } as! T
         }
@@ -756,8 +761,7 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
             // and the macro route write it: the map's entries are those.
             if context.state.pointee.decodingOffset == offset,
                 let type = context.state.pointee.decodingType,
-                MessagePackDecoding.isDictionary(type)
-            {
+                MessagePackDecoding.isDictionary(type) {
                 return try mapEntriesAsPairs()
             }
             throw MessagePackDecoding.wrongType([Any].self, parser, context, path)
@@ -767,7 +771,8 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
         }
         return MessagePackUnkeyedDecodingContainer(
             context: context, path: path, elementCount: elementCount,
-            startOffset: offset, parser: parser)
+            startOffset: offset, parser: parser
+        )
     }
 
     private func mapEntriesAsPairs() throws -> UnkeyedDecodingContainer {
@@ -777,7 +782,8 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
         }
         return MessagePackUnkeyedDecodingContainer(
             context: context, path: path, elementCount: entryCount &* 2,
-            startOffset: offset, parser: parser)
+            startOffset: offset, parser: parser
+        )
     }
 
     /// The entry count of the map at the parser, or nil if the value there
@@ -853,7 +859,8 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
         var parser = context.parser(at: offset)
         let value = try MessagePackDecoding.decodeValue(
-            type, parser: &parser, context: context, path: path)
+            type, parser: &parser, context: context, path: path
+        )
 
         // This decoder's own value ends where the one it wraps does. The
         // `decodeValue` that created this decoder (for `Optional` and other
@@ -864,4 +871,3 @@ struct MessagePackDirectDecoder: Decoder, SingleValueDecodingContainer {
         return value
     }
 }
-

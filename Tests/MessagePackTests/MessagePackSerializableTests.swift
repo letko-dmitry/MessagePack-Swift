@@ -80,6 +80,7 @@ private struct Nested: Equatable {
         var value: Int
         var label: String
     }
+
     var inner: Inner
     var inners: [Inner]
     var lookup: [String: Inner]
@@ -141,13 +142,14 @@ private struct Renamed: Equatable {
 private struct Empty: Equatable {}
 
 @MessagePackSerializable
-private struct Box<T>: Equatable where T: Equatable {
+private struct Box<T: Equatable>: Equatable {
     var value: T
 }
 
 @MessagePackSerializable
 private struct MultiBinding: Equatable {
-    var a, b: Int
+    var a: Int
+    var b: Int
     var c: String
 }
 
@@ -227,6 +229,7 @@ private struct QualifiedOptional: Equatable {
 @MessagePackSerializable
 private struct AliasBox<Element: Equatable>: Equatable {
     typealias Items = [Element]
+
     var items: Items
 }
 
@@ -367,7 +370,7 @@ struct MessagePackSerializableRoundTripTests {
             date: Date(timeIntervalSince1970: 1_700_000_000.5),
             timestamp: MessagePackTimestamp(seconds: -1, nanoseconds: 999_999_999),
             dynamic: .map([
-                .string("k"): .array([.uint8(1), .string("s"), .bool(true), .nil])
+                .string("k"): .array([.uint8(1), .string("s"), .bool(true), .nil]),
             ]),
             intKeyed: [1: "one", -2: "minus two"],
             unique: [1, 2, 3]
@@ -456,11 +459,13 @@ struct MessagePackSerializableRoundTripTests {
 
     @Test func handWrittenConformance() throws {
         let value = CustomExt(
-            extType: 42, payload: Data([1, 2, 3, 4, 5]), numbers: [10, -20, 300])
+            extType: 42, payload: Data([1, 2, 3, 4, 5]), numbers: [10, -20, 300]
+        )
         try roundTrip(value)
         // The ext payload is on the wire as a real ext value.
         let tree = try MessagePackSerializer.deserialize(
-            MessagePackValue.self, from: MessagePackSerializer.serialize(value))
+            MessagePackValue.self, from: MessagePackSerializer.serialize(value)
+        )
         #expect(tree.arrayValue?.first == .ext(type: 42, data: Data([1, 2, 3, 4, 5])))
     }
 
@@ -484,38 +489,44 @@ struct MessagePackSerializableRoundTripTests {
 struct MessagePackSerializableWireFormatTests {
     @Test func fieldsAreKeyedByName() throws {
         let value = try MessagePackSerializer.deserialize(
-            MessagePackValue.self, from: MessagePackSerializer.serialize(Foo(bar: 5, hoge: "h")))
+            MessagePackValue.self, from: MessagePackSerializer.serialize(Foo(bar: 5, hoge: "h"))
+        )
         #expect(
             value
                 == .map([
                     .string("bar"): .uint8(5),
                     .string("hoge"): .string("h"),
-                ]))
+                ])
+        )
     }
 
     @Test func escapeSequencesInCustomKeys() throws {
         let value = try MessagePackSerializer.deserialize(
             MessagePackValue.self,
-            from: MessagePackSerializer.serialize(EscapedKeys(a: 1, b: 2)))
+            from: MessagePackSerializer.serialize(EscapedKeys(a: 1, b: 2))
+        )
         #expect(
             value
                 == .map([
                     .string("q\"z"): .uint8(1),
                     .string("line\nbreak"): .uint8(2),
-                ]))
+                ])
+        )
         try roundTrip(EscapedKeys(a: 1, b: 2))
     }
 
     @Test func customAndEscapedKeys() throws {
         let renamed = Renamed(userName: "u", class: "c")
         let value = try MessagePackSerializer.deserialize(
-            MessagePackValue.self, from: MessagePackSerializer.serialize(renamed))
+            MessagePackValue.self, from: MessagePackSerializer.serialize(renamed)
+        )
         #expect(
             value
                 == .map([
                     .string("user_name"): .string("u"),
                     .string("class"): .string("c"),
-                ]))
+                ])
+        )
         try roundTrip(renamed)
     }
 
@@ -524,15 +535,18 @@ struct MessagePackSerializableWireFormatTests {
         skips.cached = "changed"
         skips.observed = 5
         let value = try MessagePackSerializer.deserialize(
-            MessagePackValue.self, from: MessagePackSerializer.serialize(skips))
+            MessagePackValue.self, from: MessagePackSerializer.serialize(skips)
+        )
         #expect(
             value
                 == .map([
                     .string("kept"): .uint8(1),
                     .string("observed"): .uint8(5),
-                ]))
+                ])
+        )
         let decoded = try MessagePackSerializer.deserialize(
-            Skips.self, from: MessagePackSerializer.serialize(skips))
+            Skips.self, from: MessagePackSerializer.serialize(skips)
+        )
         #expect(decoded.kept == 1)
         #expect(decoded.observed == 5)
         #expect(decoded.cached == "not serialized")
@@ -542,11 +556,12 @@ struct MessagePackSerializableWireFormatTests {
         var person = samplePerson
         person.email = nil
         let value = try MessagePackSerializer.deserialize(
-            MessagePackValue.self, from: MessagePackSerializer.serialize(person))
+            MessagePackValue.self, from: MessagePackSerializer.serialize(person)
+        )
         #expect(value.mapValue?[.string("email")] == .nil)
     }
 
-    @Test func integersUseSmallestFormat() throws {
+    @Test func integersUseSmallestFormat() {
         let data = MessagePackSerializer.serialize(Box<Int>(value: 5))
         // fixmap(1), fixstr(5) "value", positive fixint 5
         #expect(data == Data([0x81, 0xa5] + Array("value".utf8) + [0x05]))
@@ -565,7 +580,8 @@ struct MessagePackSerializableDecodingTests {
                 .string("hoge"): .string("h"),
                 .string("bar"): .int64(-9),
                 .string("extra"): .ext(type: 4, data: Data([1, 2, 3])),
-            ]))
+            ])
+        )
         #expect(decoded == Foo(bar: -9, hoge: "h"))
     }
 
@@ -584,7 +600,8 @@ struct MessagePackSerializableDecodingTests {
                 .string("isActive"): .bool(true),
                 .string("score"): .float64(1.5),
                 .string("tags"): .array([]),
-            ]))
+            ])
+        )
         #expect(decoded.email == nil)
     }
 
@@ -603,7 +620,8 @@ struct MessagePackSerializableDecodingTests {
                 .string("plain"): .uint8(9),
                 .string("retries"): .uint8(5),
                 .string("label"): .nil,
-            ]))
+            ])
+        )
         #expect(decoded.retries == 5)
         #expect(decoded.label == nil)
     }
@@ -614,7 +632,8 @@ struct MessagePackSerializableDecodingTests {
             from: .map([
                 .string("plain"): .uint8(9),
                 .string("version"): .uint8(99),
-            ]))
+            ])
+        )
         #expect(decoded.version == 1)
     }
 
@@ -632,7 +651,8 @@ struct MessagePackSerializableDecodingTests {
                 .string("sharedPrefixBetX"): .int64(98),
                 .string("sharedPrefixBeta"): .int64(2),
                 .string("sharedPrefixGamma"): .string("g"),
-            ]))
+            ])
+        )
         #expect(decoded == value)
     }
 
@@ -679,9 +699,11 @@ struct MessagePackSerializableDecodingTests {
     @Test func lenientNumericWidening() throws {
         #expect(try decode(Box<Double>.self, from: .map([.string("value"): .uint8(7)])).value == 7)
         #expect(
-            try decode(Box<Float>.self, from: .map([.string("value"): .float64(1.5)])).value == 1.5)
+            try decode(Box<Float>.self, from: .map([.string("value"): .float64(1.5)])).value == 1.5
+        )
         #expect(
-            try decode(Box<Double>.self, from: .map([.string("value"): .float32(2.5)])).value == 2.5)
+            try decode(Box<Double>.self, from: .map([.string("value"): .float32(2.5)])).value == 2.5
+        )
     }
 
     @Test func invalidEnumRawValueThrows() throws {
@@ -697,7 +719,8 @@ struct MessagePackSerializableDecodingTests {
         #expect(throws: MessagePackError.invalidTimestamp) {
             try decode(
                 Box<MessagePackTimestamp>.self,
-                from: .map([.string("value"): .ext(type: 7, data: Data([0, 0, 0, 0]))]))
+                from: .map([.string("value"): .ext(type: 7, data: Data([0, 0, 0, 0]))])
+            )
         }
     }
 
@@ -722,13 +745,15 @@ struct MessagePackSerializableDecodingTests {
         #expect(throws: MessagePackError.insufficientData) {
             try MessagePackSerializer.deserialize(
                 Box<[Int]>.self,
-                from: Data([0x81, 0xa5] + Array("value".utf8) + [0xdd, 0xff, 0xff, 0xff, 0xff]))
+                from: Data([0x81, 0xa5] + Array("value".utf8) + [0xdd, 0xff, 0xff, 0xff, 0xff])
+            )
         }
         // map 32 claiming 2^32-1 entries with no payload
         #expect(throws: MessagePackError.insufficientData) {
             try MessagePackSerializer.deserialize(
                 Box<[String: Int]>.self,
-                from: Data([0x81, 0xa5] + Array("value".utf8) + [0xdf, 0xff, 0xff, 0xff, 0xff]))
+                from: Data([0x81, 0xa5] + Array("value".utf8) + [0xdf, 0xff, 0xff, 0xff, 0xff])
+            )
         }
         // fixmap on the struct itself claiming more entries than the input holds
         #expect(throws: MessagePackError.insufficientData) {
@@ -749,7 +774,8 @@ struct MessagePackSerializableDecodingTests {
                     .string("isActive"): .bool(true),
                     .string("score"): .float64(1.5),
                     .string("tags"): .array([]),
-                ]))
+                ])
+            )
         }
     }
 
@@ -768,21 +794,24 @@ struct MessagePackSerializableDecodingTests {
         }
         // A wire infinity is a legitimate Float infinity, not an overflow.
         let infinite = try decode(
-            Box<Float>.self, from: .map([.string("value"): .float64(.infinity)]))
+            Box<Float>.self, from: .map([.string("value"): .float64(.infinity)])
+        )
         #expect(infinite.value == .infinity)
     }
 
     @Test func setCollapsesDuplicateWireElements() throws {
         // fixarray(3) [1, 1, 2]
         let decoded = try MessagePackSerializer.deserialize(
-            Set<Int>.self, from: Data([0x93, 0x01, 0x01, 0x02]))
+            Set<Int>.self, from: Data([0x93, 0x01, 0x01, 0x02])
+        )
         #expect(decoded == [1, 2])
     }
 
     @Test func dictionaryDuplicateWireKeysLastWins() throws {
         // fixmap(2) { "a": 1, "a": 2 }
         let decoded = try MessagePackSerializer.deserialize(
-            [String: Int].self, from: Data([0x82, 0xa1, 0x61, 0x01, 0xa1, 0x61, 0x02]))
+            [String: Int].self, from: Data([0x82, 0xa1, 0x61, 0x01, 0xa1, 0x61, 0x02])
+        )
         #expect(decoded == ["a": 2])
     }
 
@@ -852,19 +881,22 @@ struct MessagePackSerializableCodableInteropTests {
         var person = samplePerson
         person.email = nil  // written as explicit nil; decodeIfPresent handles it
         let decoded = try MessagePackDecoder().decode(
-            CodablePerson.self, from: MessagePackSerializer.serialize(person))
+            CodablePerson.self, from: MessagePackSerializer.serialize(person)
+        )
         #expect(
             decoded
                 == CodablePerson(
                     id: 42, name: "Alice", email: nil, isActive: true, score: 99.5, tags: ["a", "b"]
-                ))
+                )
+        )
     }
 
     @Test func macroReadsEncoderOutput() throws {
         var codable = codablePerson
         codable.email = nil  // key omitted entirely; macro treats it as missing
         let decoded = try MessagePackSerializer.deserialize(
-            Person.self, from: MessagePackEncoder().encode(codable))
+            Person.self, from: MessagePackEncoder().encode(codable)
+        )
         var expected = samplePerson
         expected.email = nil
         #expect(decoded == expected)

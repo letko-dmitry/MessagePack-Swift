@@ -413,7 +413,8 @@ let benchmarks: @Sendable () -> Void = {
                         .string("score"): .float64(person.score),
                         .string("tags"): .array(person.tags.map { .string($0) }),
                     ])
-                })
+                }
+            )
             blackHole(try MessagePackSerializer.serialize(value: tree))
         }
     }

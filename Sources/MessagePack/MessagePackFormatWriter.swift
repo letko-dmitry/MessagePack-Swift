@@ -122,7 +122,8 @@ extension MessagePackFormatSink {
         } else {
             precondition(
                 length <= MessagePackLimits.maxLength,
-                "MessagePack strings are limited to 2^32-1 bytes")
+                "MessagePack strings are limited to 2^32-1 bytes"
+            )
             writeByte(0xdb)
             writeBigEndian(UInt32(truncatingIfNeeded: length))
         }
@@ -172,7 +173,8 @@ extension MessagePackFormatSink {
         } else {
             precondition(
                 length <= MessagePackLimits.maxLength,
-                "MessagePack binary is limited to 2^32-1 bytes")
+                "MessagePack binary is limited to 2^32-1 bytes"
+            )
             writeByte(0xc6)
             writeBigEndian(UInt32(truncatingIfNeeded: length))
         }
@@ -225,7 +227,8 @@ extension MessagePackFormatSink {
             } else {
                 precondition(
                     length <= MessagePackLimits.maxLength,
-                    "MessagePack ext payloads are limited to 2^32-1 bytes")
+                    "MessagePack ext payloads are limited to 2^32-1 bytes"
+                )
                 writeByte(0xc9)
                 writeBigEndian(UInt32(truncatingIfNeeded: length))
             }
@@ -249,7 +252,8 @@ extension MessagePackFormatSink {
         } else {
             precondition(
                 count <= MessagePackLimits.maxLength,
-                "MessagePack arrays are limited to 2^32-1 elements")
+                "MessagePack arrays are limited to 2^32-1 elements"
+            )
             writeByte(0xdd)
             writeBigEndian(UInt32(truncatingIfNeeded: count))
         }
@@ -266,7 +270,8 @@ extension MessagePackFormatSink {
         } else {
             precondition(
                 count <= MessagePackLimits.maxLength,
-                "MessagePack maps are limited to 2^32-1 entries")
+                "MessagePack maps are limited to 2^32-1 entries"
+            )
             writeByte(0xdf)
             writeBigEndian(UInt32(truncatingIfNeeded: count))
         }
@@ -458,7 +463,7 @@ extension MessagePackFormatSink {
                     index += 1
                     if stack.count != top + 1 { break }
                 }
-                if index == count && stack.count == top + 1 {
+                if index == count, stack.count == top + 1 {
                     stack.removeLast()
                 } else {
                     stack[top].index = index
@@ -472,7 +477,7 @@ extension MessagePackFormatSink {
     /// limits. Iterative like ``write(_:)``, so hostile or extremely deep
     /// trees cannot overflow the call stack.
     mutating func writeValidated(_ root: MessagePackValue) throws(MessagePackError) {
-        try writeTree(root) { (sink, value, stack) throws(MessagePackError) in
+        try writeTree(root) { sink, value, stack throws(MessagePackError) in
             try sink.writeValidatedValue(value, stack: &stack)
         }
     }

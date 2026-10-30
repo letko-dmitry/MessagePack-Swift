@@ -134,7 +134,8 @@ final class MessagePackKeyedStorage: ManagedBuffer<MessagePackKeyedStorage.State
                 reallocateEntries(capacity: Swift.max(scannedCount * 2, 8))
             }
             (state.pointee.entries.unsafelyUnwrapped + scannedCount).initialize(
-                to: Entry(keyOffset: keyOffset, keyLength: keyLength, valueOffset: valueOffset))
+                to: Entry(keyOffset: keyOffset, keyLength: keyLength, valueOffset: valueOffset)
+            )
             state.pointee.scannedCount = scannedCount &+ 1
             if isContainer {
                 state.pointee.lastValueEnd = -1
@@ -217,11 +218,11 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         for index in 0..<storage.scannedCount {
             let entry = storage.entry(at: index)
             var parser = context.parser(at: entry.keyOffset)
-            if let string = ((try? parser.readRawString()) ?? nil) {
+            if let string = try? parser.readRawString() {
                 if let key = Key(stringValue: string) { keys.append(key) }
             } else {
                 var intParser = context.parser(at: entry.keyOffset)
-                guard let raw = ((try? intParser.readRawInteger()) ?? nil) else { continue }
+                guard let raw = try? intParser.readRawInteger() else { continue }
                 let intValue: Int?
                 switch raw {
                 case .signed(let v): intValue = Int(exactly: v)
@@ -308,7 +309,7 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     private func matchesIntegerKey(_ intValue: Int?, at keyOffset: Int) -> Bool {
         guard let intValue else { return false }
         var parser = context.parser(at: keyOffset)
-        guard let raw = ((try? parser.readRawInteger()) ?? nil) else { return false }
+        guard let raw = try? parser.readRawInteger() else { return false }
         switch raw {
         case .signed(let v): return Int64(intValue) == v
         case .unsigned(let v): return intValue >= 0 && UInt64(intValue) == v
@@ -322,7 +323,8 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
                 DecodingError.Context(
                     codingPath: codingPath,
                     debugDescription: "No value associated with key \"\(key.stringValue)\""
-                ))
+                )
+            )
         }
         return index
     }
@@ -367,7 +369,8 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         _ read: (inout MessagePackDecoding.Parser) throws(MessagePackDecodeFailure) -> T
     ) throws -> T {
         try MessagePackDecoding.decodeScalar(
-            type, context: context, offset: try valueOffset(key), path: context.path(path, appending: key), read)
+            type, context: context, offset: try valueOffset(key), path: context.path(path, appending: key), read
+        )
     }
 
     @inline(__always)
@@ -379,7 +382,8 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
 
         return try MessagePackDecoding.decodeScalar(
             type, context: context, offset: storage.entry(at: index).valueOffset,
-            path: context.path(path, appending: key), read)
+            path: context.path(path, appending: key), read
+        )
     }
 
     func decode(_ type: Bool.Type, forKey key: Key) throws -> Bool {
@@ -528,7 +532,8 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
     private func decode<T: Decodable>(_ type: T.Type, entry index: Int, forKey key: Key) throws -> T {
         var parser = context.parser(at: storage.entry(at: index).valueOffset)
         let value = try MessagePackDecoding.decodeValue(
-            type, parser: &parser, context: context, path: context.path(path, appending: key))
+            type, parser: &parser, context: context, path: context.path(path, appending: key)
+        )
         storage.recordValueEnd(parser.offset, at: index)
 
         return value
@@ -538,13 +543,15 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
         keyedBy type: NestedKey.Type, forKey key: Key
     ) throws -> KeyedDecodingContainer<NestedKey> {
         let decoder = MessagePackDirectDecoder(
-            context: context, offset: try valueOffset(key), path: context.path(path, appending: key))
+            context: context, offset: try valueOffset(key), path: context.path(path, appending: key)
+        )
         return try decoder.container(keyedBy: NestedKey.self)
     }
 
     func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
         let decoder = MessagePackDirectDecoder(
-            context: context, offset: try valueOffset(key), path: context.path(path, appending: key))
+            context: context, offset: try valueOffset(key), path: context.path(path, appending: key)
+        )
         return try decoder.unkeyedContainer()
     }
 
@@ -557,7 +564,8 @@ struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
             return MessagePackNilDecoder(codingPath: codingPath, userInfo: context.userInfo)
         }
         return MessagePackDirectDecoder(
-            context: context, offset: storage.entry(at: index).valueOffset, path: context.path(path, appending: key))
+            context: context, offset: storage.entry(at: index).valueOffset, path: context.path(path, appending: key)
+        )
     }
 
     func superDecoder() throws -> Decoder {
@@ -585,7 +593,8 @@ struct MessagePackNilDecoder: Decoder, SingleValueDecodingContainer {
             DecodingError.Context(
                 codingPath: codingPath,
                 debugDescription: "Cannot decode \(type) -- found nil value instead"
-            ))
+            )
+        )
     }
 
     func container<Key: CodingKey>(keyedBy type: Key.Type) throws -> KeyedDecodingContainer<Key> {
@@ -667,7 +676,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
                 DecodingError.Context(
                     codingPath: codingPath,
                     debugDescription: "Unkeyed container is at end"
-                ))
+                )
+            )
         }
     }
 
@@ -698,7 +708,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
             parser.offset = elementStart
             throw MessagePackDecoding.decodingError(
                 error, type: type, parser: parser, context: context,
-                path: { context.path(path, appendingIndex: currentIndex) })
+                path: { context.path(path, appendingIndex: currentIndex) }
+            )
         }
     }
 
@@ -776,7 +787,8 @@ struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
         let parentPath = path
         let index = currentIndex
         let value = try MessagePackDecoding.decodeValue(
-            type, parser: &parser, context: context, path: context.path(parentPath, appendingIndex: index))
+            type, parser: &parser, context: context, path: context.path(parentPath, appendingIndex: index)
+        )
         advanceIndex()
         return value
     }

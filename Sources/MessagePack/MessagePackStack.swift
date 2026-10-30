@@ -17,7 +17,7 @@ struct MessagePackStack<Element> {
 
     init(memory: UnsafeMutableBufferPointer<Element>) {
         // Growing doubles the capacity, so zero would never grow.
-        precondition(memory.count > 0, "a stack needs room for an element")
+        precondition(!memory.isEmpty, "a stack needs room for an element")
         self.base = memory.baseAddress.unsafelyUnwrapped
         self.capacity = memory.count
     }

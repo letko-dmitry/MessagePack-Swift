@@ -16,7 +16,7 @@ struct Envelope {
     var count: Int?
 }
 
-@Suite struct DefaultMainActorIsolationTests {
+struct DefaultMainActorIsolationTests {
     @Test nonisolated func roundTripsFromANonisolatedContext() throws {
         let envelope = Envelope(op: "editor.replace", payload: Data([1, 2, 3]), count: 3)
         let bytes = MessagePackSerializer.serialize(envelope)

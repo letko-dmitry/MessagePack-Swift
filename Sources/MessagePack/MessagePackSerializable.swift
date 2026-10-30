@@ -128,7 +128,7 @@ extension MessagePackSerializer {
     public static func deserialize<T: MessagePackSerializable>(
         _ type: T.Type = T.self, from bytes: RawSpan
     ) throws(MessagePackError) -> T {
-        try bytes.withUnsafeBytes { (buffer) throws(MessagePackError) in try deserialize(type, from: buffer) }
+        try bytes.withUnsafeBytes { buffer throws(MessagePackError) in try deserialize(type, from: buffer) }
     }
 
     @inlinable

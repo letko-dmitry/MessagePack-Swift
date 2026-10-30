@@ -1,0 +1,209 @@
+# SwiftLint configuration for this repository.
+#
+# COMMAND LINE RULES: swiftlint rules
+# RULES URL: https://realm.github.io/SwiftLint/rule-directory.html
+#
+# Run it with Tools/SwiftLint/lint.sh, after Tools/SwiftFormat/format.sh. SwiftFormat FIXES, SwiftLint REPORTS:
+# each rule .swiftformat repairs is enabled here too, so code that skipped the formatter is still caught.
+#
+# Every opt-in rule below had zero violations once the formatter had run (SwiftLint 0.65.1, 2026-10-30), or was
+# fixed by hand then. A rule left off says how many sites it would report and why they stay.
+
+included:
+    - Sources
+    - Tests
+
+# Benchmarks/ is formatted but not linted: its measured closures use `try!` (27) and the comparison fixtures
+# take the Objective-C types MPMessagePack needs (6).
+
+disabled_rules:
+    # A raw value is what gets encoded: `case foo = "foo"` stays explicit, so renaming the case cannot silently
+    # change it. SwiftFormat's redundantRawValues is disabled for the same reason.
+    - redundant_string_enum_value
+
+    # The tests spell `Optional<Int>.none`, and a `Swift.Optional<Int>` field, on purpose: the macro must
+    # recognise the long form. (4)
+    - syntactic_sugar
+
+    # The decoder's fast paths return `… as! T` right after checking `T.self == X.self`: the cast is the
+    # mechanism, and specialization folds it away. (36)
+    - force_cast
+
+
+opt_in_rules:
+    # Cleared by SwiftFormat; .swiftformat names the pairing.
+    - contains_over_filter_count
+    - contains_over_filter_is_empty
+    - contains_over_first_not_nil
+    - empty_count
+    - first_where
+    - flatmap_over_map_reduce
+    - multiline_arguments_brackets
+    - prefer_condition_list
+    - reduce_into
+    - sorted_first_last
+    - unneeded_parentheses_in_closure_argument
+    - vertical_whitespace_closing_braces
+
+    # Fixed by hand when this file was added.
+    - closure_parameter_position
+    - empty_collection_literal
+    - legacy_multiple
+    - let_var_whitespace
+    - redundant_nil_coalescing
+
+    # Zero violations.
+    - array_init
+    - async_without_await
+    - closure_end_indentation
+    - closure_spacing
+    - collection_alignment
+    - contains_over_range_nil_comparison
+    - direct_return
+    - discouraged_assert
+    - discouraged_direct_init
+    - empty_string
+    - enum_case_associated_values_count
+    - explicit_init
+    - fallthrough
+    - file_name_no_space
+    - identical_operands
+    - implicitly_unwrapped_optional
+    - indentation_width
+    - joined_default_parameter
+    - last_where
+    - legacy_objc_type
+    - legacy_random
+    - literal_expression_end_indentation
+    - lower_acl_than_parent
+    - modifier_order
+    - multiline_literal_brackets
+    - multiline_parameters_brackets
+    - operator_usage_whitespace
+    - optional_enum_case_matching
+    - overridden_super_call
+    - override_in_extension
+    - period_spacing
+    - prefer_key_path
+    - prefer_self_type_over_type_of_self
+    - prefer_zero_over_explicit_init
+    - raw_value_for_camel_cased_codable_enum
+    - redundant_final
+    - redundant_set_access_control
+    - redundant_type_annotation
+    - static_operator
+    - toggle_bool
+    - unavailable_function
+    - unhandled_throwing_task
+    - unneeded_escaping
+    - untyped_error_in_catch
+    - vertical_parameter_alignment_on_call
+    - vertical_whitespace_opening_braces
+    - void_function_in_ternary
+
+    # NOT enabled — each reports code written this way on purpose:
+    #   force_unwrapping (9)              `baseAddress!` of buffers that are non-empty by construction,
+    #                                     failable initializers that cannot fail, the macro's lookups of keys it
+    #                                     has just inserted.
+    #   unneeded_throws_rethrows (73)     The Codable containers' `encode(_:) throws` and the macro's
+    #                                     `expansion` keep their protocol's `throws`.
+    #   extension_access_modifier (3)     Access modifiers sit on the declarations (.swiftformat's
+    #                                     --extension-acl).
+    #   multiline_call_arguments (19),
+    #   multiline_parameters (7)          A wrapped argument list packs several arguments per line.
+    #   discouraged_optional_boolean (5)  `MessagePackValue.boolValue: Bool?` is public API, and
+    #                                     `decodeIfPresent(_: Bool.Type, forKey:) -> Bool?` is a Codable requirement.
+    #   convenience_type (1)              `public struct MessagePackSerializer` only hosts static members, but
+    #                                     turning it into an enum breaks 0.1.0 users.
+    #   self_binding (1)                  The one hit unwraps an Optional's own `self`, not a weak capture.
+    #   explicit_enum_raw_value (36)      The tests' `enum Keys: String, CodingKey { case a, b }`.
+    #   trailing_closure (4)              A closure passed as `path:` keeps its label.
+    #   attributes (278), vertical_whitespace_between_cases (202)
+    #                                     Not this code's style.
+    #
+    # NOT enabled because nothing here can trigger them (no UIKit, SwiftUI, Interface Builder or localized
+    # strings): accessibility_trait_for_button, discarded_notification_center_observer, discouraged_object_literal,
+    # ibinspectable_in_extension, legacy_uigraphics_function, nslocalizedstring_key, nslocalizedstring_require_bundle,
+    # prefer_asset_symbols, private_action, private_outlet, private_swiftui_state, prohibited_interface_builder,
+    # prohibited_super_call, weak_delegate.
+
+
+# configurations
+
+lower_acl_than_parent: error
+
+# MessagePackStack compares its own `count`, which has no `isEmpty`.
+empty_count:
+    only_after_dot: true
+
+# Multi-line collection literals end with a comma, as .swiftformat's --trailing-commas collections-only writes.
+trailing_comma:
+    mandatory_comma: true
+
+# `reusableKeyedStorage()` returns the first pooled storage `isKnownUniquelyReferenced(&…)` accepts; the check
+# reads better inside the loop than in a `where` clause.
+for_where:
+    allow_for_as_filter: true
+
+nesting:
+    type_level: 3
+
+# The default, 120, would report 57 lines.
+line_length:
+    warning: 180
+    error: 200
+    ignores_function_declarations: true
+    ignores_urls: true
+    ignores_comments: true
+    ignores_interpolated_strings: true
+    ignores_multiline_strings: true
+    ignores_regex_literals: true
+
+# Pattern bindings and indices are named `v`, `i`, `a`; the default minimum, 3, would report 159.
+identifier_name:
+    min_length: 1
+    max_length:
+        warning: 50
+        error: 50
+
+# MessagePackDeferredSingleValueEncodingContainer is 47 characters.
+type_name:
+    max_length:
+        warning: 50
+        error: 60
+
+indentation_width:
+    include_comments: false
+    include_compiler_directives: false
+    include_multiline_strings: false
+
+# Size and complexity limits sit just above Sources/'s measured maxima (2026-10-30). The hot paths are shaped by
+# measurement, not by size: the parser's switch over format bytes is one function (parseValue, 152 lines), the
+# coders dispatch on `T.self` in one chain (encodeNative, complexity 21) and the conformance caches are 4-tuples.
+# Splitting them costs instructions, so these limits stop growth past what is there; they do not ask for splits.
+# Tests/ opts out of the size limits in Tests/.swiftlint.yml.
+cyclomatic_complexity:
+    ignores_case_statements: true
+    warning: 25
+    error: 30
+
+function_body_length:
+    warning: 160
+    error: 200
+
+file_length:
+    warning: 700
+    error: 900
+    ignore_comment_only_lines: true
+
+type_body_length:
+    warning: 500
+    error: 700
+
+large_tuple:
+    warning: 4
+    error: 5
+
+function_parameter_count:
+    warning: 6
+    error: 8

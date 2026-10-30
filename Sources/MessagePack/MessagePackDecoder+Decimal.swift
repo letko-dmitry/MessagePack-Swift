@@ -19,8 +19,7 @@ extension MessagePackDecoding {
             return try decodeWithContainers(Decimal.self, parser: &parser, context: context, path: path)
         }
 
-        return try readScalarOrRewind(Decimal.self, &parser, parser.offset, context, path) {
-            (parser: inout Parser) throws(MessagePackDecodeFailure) -> Decimal in
+        return try readScalarOrRewind(Decimal.self, &parser, parser.offset, context, path) { (parser: inout Parser) throws(MessagePackDecodeFailure) -> Decimal in
             try readDecimal(&parser, strategy: strategy)
         }
     }

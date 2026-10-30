@@ -25,11 +25,10 @@ private func decodingPath(_ body: () throws -> Void) -> [String]? {
     do {
         try body()
         return nil
-    } catch let DecodingError.typeMismatch(_, context),
-        let DecodingError.valueNotFound(_, context),
-        let DecodingError.keyNotFound(_, context),
-        let DecodingError.dataCorrupted(context)
-    {
+    } catch DecodingError.typeMismatch(_, let context),
+        DecodingError.valueNotFound(_, let context),
+        DecodingError.keyNotFound(_, let context),
+        DecodingError.dataCorrupted(let context) {
         return keys(context.codingPath)
     } catch {
         return nil
@@ -59,9 +58,10 @@ struct CodableCodingPathTests {
                     .string("leaves"): .array([
                         .map([.string("value"): .uint8(1)]),
                         .map([.string("value"): .string("x")]),
-                    ])
-                ])
-            ]))
+                    ]),
+                ]),
+            ])
+        )
 
         let path = decodingPath { _ = try MessagePackDecoder().decode(Root.self, from: data) }
         #expect(path == ["branch", "leaves", "#1", "value"])
@@ -92,7 +92,8 @@ struct CodableCodingPathTests {
         }
 
         let data = try MessagePackSerializer.serialize(
-            value: .map([.string("probes"): .map([.string("a"): .array([.nil, .nil])])]))
+            value: .map([.string("probes"): .map([.string("a"): .array([.nil, .nil])])])
+        )
         let outer = try MessagePackDecoder().decode(Outer.self, from: data)
         #expect(outer.probes["a"]?.map(\.path) == [["probes", "a", "#0"], ["probes", "a", "#1"]])
     }
@@ -213,7 +214,7 @@ struct CodableCodingPathTests {
         do {
             _ = try MessagePackEncoder().encode(["holder": Holder(dates: [.now, Date(timeIntervalSince1970: .infinity)])])
             Issue.record("Expected an encoding error")
-        } catch let EncodingError.invalidValue(_, context) {
+        } catch EncodingError.invalidValue(_, let context) {
             #expect(keys(context.codingPath) == ["holder", "dates", "#1"])
         }
     }
@@ -272,7 +273,8 @@ struct CodableStructArrayTests {
             value: .array([
                 .array([.map([.string("value"): .uint8(1)]), .map([.string("value"): .string("x")])]),
                 .uint8(7),
-            ]))
+            ])
+        )
         let lenient = try MessagePackDecoder().decode(Lenient.self, from: data)
         #expect(lenient.leaves == nil)
         #expect(lenient.skipped == 2)
@@ -295,13 +297,15 @@ struct CodableDecodeIfPresentTests {
 
     @Test func presentNilAndAbsentValues() throws {
         let present = try MessagePackSerializer.serialize(
-            value: .map([.string("number"): .uint8(5), .string("inner"): .map([.string("value"): .uint8(7)])]))
+            value: .map([.string("number"): .uint8(5), .string("inner"): .map([.string("value"): .uint8(7)])])
+        )
         let decoded = try MessagePackDecoder().decode(Sparse.self, from: present)
         #expect(decoded.number == 5)
         #expect(decoded.inner == Sparse.Inner(value: 7))
 
         let explicitNil = try MessagePackSerializer.serialize(
-            value: .map([.string("number"): .nil, .string("inner"): .nil]))
+            value: .map([.string("number"): .nil, .string("inner"): .nil])
+        )
         let decodedNil = try MessagePackDecoder().decode(Sparse.self, from: explicitNil)
         #expect(decodedNil.number == nil)
         #expect(decodedNil.inner == nil)
@@ -321,6 +325,7 @@ struct CodableDecodeIfPresentTests {
     @Test func repeatedAndOutOfOrderLookupsResolve() throws {
         struct Probe: Decodable {
             enum Keys: String, CodingKey { case a, b, c }
+
             var values: [Int]
 
             init(from decoder: Decoder) throws {
@@ -334,7 +339,8 @@ struct CodableDecodeIfPresentTests {
         }
 
         let data = try MessagePackSerializer.serialize(
-            value: .map([.string("a"): .uint8(1), .string("b"): .uint8(2), .string("c"): .uint8(3)]))
+            value: .map([.string("a"): .uint8(1), .string("b"): .uint8(2), .string("c"): .uint8(3)])
+        )
         #expect(try MessagePackDecoder().decode(Probe.self, from: data).values == [3, 3, 1, 2, 1, 3])
     }
 }
@@ -415,7 +421,8 @@ struct CodableStringKeyedDictionaryTests {
 
     @Test func mismatchedValueReportsItsKey() throws {
         let data = try MessagePackSerializer.serialize(
-            value: .map([.string("outer"): .map([.string("a"): .uint8(1), .string("b"): .string("x")])]))
+            value: .map([.string("outer"): .map([.string("a"): .uint8(1), .string("b"): .string("x")])])
+        )
         let path = decodingPath { _ = try MessagePackDecoder().decode([String: [String: Int]].self, from: data) }
         #expect(path == ["outer", "b"])
     }

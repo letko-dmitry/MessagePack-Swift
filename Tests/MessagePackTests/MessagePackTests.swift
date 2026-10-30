@@ -64,10 +64,12 @@ struct IntegerTests {
     @Test func uint64Format() throws {
         #expect(
             try serializedBytes(.uint64(0x1_0000_0000))
-                == [0xcf, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00])
+                == [0xcf, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]
+        )
         #expect(
             try deserialize([0xcf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
-                == .uint64(UInt64.max))
+                == .uint64(UInt64.max)
+        )
     }
 
     @Test func int8Format() throws {
@@ -90,10 +92,12 @@ struct IntegerTests {
     @Test func int64Format() throws {
         #expect(
             try serializedBytes(.int64(Int64(Int32.min) - 1))
-                == [0xd3, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xff, 0xff, 0xff])
+                == [0xd3, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xff, 0xff, 0xff]
+        )
         #expect(
             try deserialize([0xd3, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-                == .int64(Int64.min))
+                == .int64(Int64.min)
+        )
     }
 
     @Test func minimalEncodingOfWideCases() throws {
@@ -117,7 +121,8 @@ struct FloatTests {
         #expect(try serializedBytes(.float64(1.0)) == [0xca, 0x3f, 0x80, 0x00, 0x00])
         #expect(
             try serializedBytes(.float64(3.141592653589793))
-                == [0xcb, 0x40, 0x09, 0x21, 0xfb, 0x54, 0x44, 0x2d, 0x18])
+                == [0xcb, 0x40, 0x09, 0x21, 0xfb, 0x54, 0x44, 0x2d, 0x18]
+        )
         let value = MessagePackValue.float64(3.141592653589793)
         let data = try MessagePackSerializer.serialize(value: value)
         #expect(try MessagePackSerializer.deserialize(data: data) == value)
@@ -289,7 +294,8 @@ struct MapTests {
         let entries = Dictionary(
             uniqueKeysWithValues: (0..<16).map {
                 (MessagePackValue.uint8(UInt8($0)), MessagePackValue.bool(true))
-            })
+            }
+        )
         let bytes = try serializedBytes(.map(entries))
         #expect(bytes.prefix(3) == [0xde, 0x00, 0x10])
         #expect(try deserialize(bytes) == .map(entries))
@@ -301,7 +307,8 @@ struct MapTests {
         let entries = Dictionary(
             uniqueKeysWithValues: (0..<1000).map {
                 (MessagePackValue.string("key\($0)"), MessagePackValue.string("value\($0)"))
-            })
+            }
+        )
         let data = try MessagePackSerializer.serialize(value: .map(entries))
         #expect(try MessagePackSerializer.deserialize(data: data) == .map(entries))
     }
@@ -360,7 +367,8 @@ struct ErrorTests {
 
     @Test func uint32LengthMustFitPlatformInteger() throws {
         #expect(
-            try messagePackLengthExactly(UInt32(Int32.max), as: Int32.self) == Int32.max)
+            try messagePackLengthExactly(UInt32(Int32.max), as: Int32.self) == Int32.max
+        )
         #expect(throws: MessagePackError.insufficientData) {
             try messagePackLengthExactly(UInt32.max, as: Int32.self)
         }
@@ -413,7 +421,7 @@ struct AccessorTests {
         #expect(MessagePackValue.string("x").stringValue == "x")
         #expect(MessagePackValue.binary(Data([1])).binaryValue == Data([1]))
         #expect(MessagePackValue.array([.nil]).arrayValue == [.nil])
-        #expect(MessagePackValue.map([:]).mapValue == [:])
+        #expect(MessagePackValue.map([:]).mapValue?.isEmpty == true)
         #expect(MessagePackValue.nil.stringValue == nil)
     }
 }
@@ -430,7 +438,7 @@ struct RoundTripTests {
             .string("enabled"): .bool(true),
             .string("payload"): .binary(Data([0xde, 0xad, 0xbe, 0xef])),
             .string("meta"): .map([
-                .string("nested"): .array([.nil, .int16(-1000)])
+                .string("nested"): .array([.nil, .int16(-1000)]),
             ]),
         ])
         let data = try MessagePackSerializer.serialize(value: value)

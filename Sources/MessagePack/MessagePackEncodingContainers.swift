@@ -341,7 +341,8 @@ struct MessagePackUnkeyedEncodingContainer: UnkeyedEncodingContainer {
     mutating func encode<T: Encodable>(_ value: T) throws {
         beginElement()
         try context.encodeValue(
-            value, path: context.path(path, appendingIndex: count - 1))
+            value, path: context.path(path, appendingIndex: count - 1)
+        )
     }
 
     mutating func nestedContainer<NestedKey: CodingKey>(

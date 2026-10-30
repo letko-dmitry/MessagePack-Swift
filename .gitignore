@@ -5,6 +5,10 @@
 /Packages
 xcuserdata/
 DerivedData/
-.swiftpm/
+# All of .swiftpm except the shared scheme, whose pre-actions run Tools/SwiftFormat and Tools/SwiftLint.
+.swiftpm/*
+!.swiftpm/xcode
+.swiftpm/xcode/*
+!.swiftpm/xcode/xcshareddata
 .netrc
 .benchmarkBaselines/

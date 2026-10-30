@@ -34,14 +34,14 @@ let package = Package(
             dependencies: ["MessagePackMacros"],
             swiftSettings: [
                 .enableUpcomingFeature("ApproachableConcurrency"),
-            ],
+            ]
         ),
         .testTarget(
             name: "MessagePackTests",
             dependencies: ["MessagePack"],
             swiftSettings: [
                 .enableUpcomingFeature("ApproachableConcurrency"),
-            ],
+            ]
         ),
         .testTarget(
             name: "MessagePackMacrosTests",

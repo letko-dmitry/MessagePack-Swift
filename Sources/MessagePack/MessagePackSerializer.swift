@@ -14,8 +14,7 @@ public struct MessagePackSerializer {
     /// the unsigned formats (positive fixint / uint 8-64); negative integers
     /// use the signed formats (negative fixint / int 8-64).
     public static func serialize(value: MessagePackValue) throws(MessagePackError) -> Data {
-        try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) {
-            (memory) throws(MessagePackError) -> Data in
+        try withUnsafeTemporaryAllocation(byteCount: MessagePackScratchBuffer.initialCapacity, alignment: 8) { memory throws(MessagePackError) -> Data in
             var buffer = MessagePackScratchBuffer(memory: memory)
             do throws(MessagePackError) {
                 try buffer.writeValidated(value)
@@ -58,7 +57,7 @@ public struct MessagePackSerializer {
     /// Throws ``MessagePackError/trailingBytes`` if `bytes` contains bytes
     /// beyond the first top-level value.
     public static func deserialize(data bytes: RawSpan) throws(MessagePackError) -> MessagePackValue {
-        try bytes.withUnsafeBytes { (buffer) throws(MessagePackError) in try deserialize(buffer) }
+        try bytes.withUnsafeBytes { buffer throws(MessagePackError) in try deserialize(buffer) }
     }
 
     private static func deserialize(_ buffer: UnsafeRawBufferPointer) throws(MessagePackError) -> MessagePackValue {

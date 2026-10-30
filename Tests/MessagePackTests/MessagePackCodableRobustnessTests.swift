@@ -31,7 +31,8 @@ struct CodableRobustnessTests {
     // Finding 1: a caught scalar failure must rewind the unkeyed cursor.
     @Test func unkeyedRetryAfterFailureKeepsCursorInSync() throws {
         let data = try MessagePackSerializer.serialize(
-            value: .array([.uint16(300), .uint8(7)]))
+            value: .array([.uint16(300), .uint8(7)])
+        )
         let decoded = try MessagePackDecoder().decode(FlexibleInts.self, from: data)
         #expect(decoded.values == [300, 7])
     }
@@ -50,7 +51,8 @@ struct CodableRobustnessTests {
             }
         }
         let data = try MessagePackSerializer.serialize(
-            value: .array([.array([.uint16(300), .uint8(7)]), .string("after")]))
+            value: .array([.array([.uint16(300), .uint8(7)]), .string("after")])
+        )
         let decoded = try MessagePackDecoder().decode(Outer.self, from: data)
         #expect(decoded.inner.values == [300, 7])
         #expect(decoded.after == "after")
@@ -208,6 +210,7 @@ struct CodableRobustnessTests {
     @Test func superDecoderMissingEntryIsNil() throws {
         struct Probe: Decodable {
             enum Keys: String, CodingKey { case x }
+
             var superWasNil: Bool
 
             init(from decoder: Decoder) throws {
@@ -220,7 +223,8 @@ struct CodableRobustnessTests {
         #expect(try MessagePackDecoder().decode(Probe.self, from: missing).superWasNil)
 
         let present = try MessagePackSerializer.serialize(
-            value: .map([.string("x"): .uint8(1), .string("super"): .uint8(5)]))
+            value: .map([.string("x"): .uint8(1), .string("super"): .uint8(5)])
+        )
         #expect(try MessagePackDecoder().decode(Probe.self, from: present).superWasNil == false)
     }
 
@@ -253,7 +257,8 @@ struct CodableRobustnessTests {
                 .string("e"): .array([.uint8(2), .uint8(3)]),
                 .string("c"): .bool(true),
                 .string("a"): .uint8(1),
-            ]))
+            ])
+        )
         #expect(try MessagePackDecoder().decode(Sparse.self, from: reversed) == value)
     }
 

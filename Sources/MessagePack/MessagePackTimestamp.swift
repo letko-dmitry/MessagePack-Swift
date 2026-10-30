@@ -123,7 +123,8 @@ extension MessagePackTimestamp: Codable {
         guard nanoseconds < 1_000_000_000 else {
             throw DecodingError.dataCorruptedError(
                 forKey: .nanoseconds, in: container,
-                debugDescription: "nanoseconds must be less than 1_000_000_000")
+                debugDescription: "nanoseconds must be less than 1_000_000_000"
+            )
         }
         self.init(seconds: seconds, nanoseconds: nanoseconds)
     }
@@ -178,7 +179,8 @@ extension MessagePackTimestamp {
         Date(
             timeIntervalSinceReferenceDate: TimeInterval(seconds)
                 - TimeInterval(Self.epochOffset)
-                + TimeInterval(nanoseconds) / 1_000_000_000)
+                + TimeInterval(nanoseconds) / 1_000_000_000
+        )
     }
 
     /// Seconds from 1970-01-01 to 2001-01-01, the reference date of `Date`.

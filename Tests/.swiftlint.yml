@@ -1,0 +1,8 @@
+# Tests are tables of vectors and expected macro expansions, so the root config's size limits do not apply to
+# them; and an `Int!` field is how the macro's support for implicitly unwrapped optionals is tested.
+disabled_rules:
+    - file_length
+    - function_body_length
+    - implicitly_unwrapped_optional
+    - large_tuple
+    - type_body_length

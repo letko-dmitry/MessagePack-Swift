@@ -22,6 +22,7 @@ let messagePackMakeString: @Sendable (UnsafeBufferPointer<UInt8>) -> String? = {
         return { bytes in String(validating: bytes, as: UTF8.self) }
     } else {
         return { bytes in
+            // swiftlint:disable:next optional_data_string_conversion - validated on the next line
             let string = String(decoding: bytes, as: UTF8.self)
             return string.utf8.elementsEqual(bytes) ? string : nil
         }
@@ -280,7 +281,8 @@ extension MessagePackSerializer {
                     guard remaining == 0 else { break }
                     if isMap {
                         var entries = [MessagePackValue: MessagePackValue](
-                            minimumCapacity: items.count / 2)
+                            minimumCapacity: items.count / 2
+                        )
                         var i = 0
                         while i < items.count {
                             // Not `entries[…] = …`, whose optional setter
@@ -683,7 +685,8 @@ extension MessagePackSerializer.Parser {
                 try addPendingValues(Int(format & 0x0f), multiplier: 2, to: &remaining)
             case 0xde:  // map 16
                 try addPendingValues(
-                    Int(try readBigEndian(UInt16.self)), multiplier: 2, to: &remaining)
+                    Int(try readBigEndian(UInt16.self)), multiplier: 2, to: &remaining
+                )
             case 0xdf:  // map 32
                 try addPendingValues(try readLength32(), multiplier: 2, to: &remaining)
             default:  // 0xc1

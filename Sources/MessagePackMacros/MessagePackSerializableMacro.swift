@@ -136,7 +136,8 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
     ) throws -> [ExtensionDeclSyntax] {
         guard let structDecl = declaration.as(StructDeclSyntax.self) else {
             context.diagnose(
-                Diagnostic(node: Syntax(node), message: MessagePackMacroDiagnostic.notAStruct))
+                Diagnostic(node: Syntax(node), message: MessagePackMacroDiagnostic.notAStruct)
+            )
             return []
         }
         guard let fields = collectFields(of: structDecl, in: context) else {
@@ -149,7 +150,9 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
                 context.diagnose(
                     Diagnostic(
                         node: field.syntax,
-                        message: MessagePackMacroDiagnostic.duplicateKey(field.key)))
+                        message: MessagePackMacroDiagnostic.duplicateKey(field.key)
+                    )
+                )
                 return []
             }
         }
@@ -274,7 +277,8 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
         } else {
             for field in decodable {
                 lines.append(
-                    "    var _msgpack_\(field.name): Optional<\(field.constructor!)> = nil")
+                    "    var _msgpack_\(field.name): Optional<\(field.constructor!)> = nil"
+                )
             }
             lines.append("    let _msgpackEntryCount = try reader.readMapHeader()")
             lines.append("    for _ in 0 ..< _msgpackEntryCount {")
@@ -295,7 +299,8 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
             for field in decodable {
                 if let defaultValue = field.defaultValue {
                     lines.append(
-                        "    self.`\(field.name)` = _msgpack_\(field.name) ?? (\(defaultValue))")
+                        "    self.`\(field.name)` = _msgpack_\(field.name) ?? (\(defaultValue))"
+                    )
                 } else if field.isOptional {
                     lines.append("    self.`\(field.name)` = _msgpack_\(field.name) ?? nil")
                 } else {
@@ -381,12 +386,12 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
         let take = min(8, length - offset)
         let groups = Dictionary(grouping: entries) { chunkValue($0.bytes, offset: offset, count: take) }
         var lines = [
-            "switch MessagePack.MessagePackReader.keyChunk(_msgpackKey, offset: \(offset), count: \(take)) {"
+            "switch MessagePack.MessagePackReader.keyChunk(_msgpackKey, offset: \(offset), count: \(take)) {",
         ]
         for value in groups.keys.sorted() {
             let group = groups[value]!
             lines.append("case \(hexLiteral(value)):")
-            if group.count == 1 && offset + take == length {
+            if group.count == 1, offset + take == length {
                 lines.append("    return \(group[0].index)")
             } else {
                 lines.append(contentsOf: matchGroup(group, offset: offset + take).map { "    \($0)" })
@@ -538,7 +543,9 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
                         context.diagnose(
                             Diagnostic(
                                 node: Syntax(attribute),
-                                message: MessagePackMacroDiagnostic.invalidKeyArgument))
+                                message: MessagePackMacroDiagnostic.invalidKeyArgument
+                            )
+                        )
                         return nil
                     }
                     customKey = value
@@ -563,17 +570,21 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
                     context.diagnose(
                         Diagnostic(
                             node: Syntax(binding),
-                            message: MessagePackMacroDiagnostic.ignoredPropertyNeedsDefault))
+                            message: MessagePackMacroDiagnostic.ignoredPropertyNeedsDefault
+                        )
+                    )
                     return nil
                 }
                 continue
             }
 
-            if customKey != nil && varDecl.bindings.count > 1 {
+            if customKey != nil, varDecl.bindings.count > 1 {
                 context.diagnose(
                     Diagnostic(
                         node: Syntax(varDecl),
-                        message: MessagePackMacroDiagnostic.keyOnMultipleBindings))
+                        message: MessagePackMacroDiagnostic.keyOnMultipleBindings
+                    )
+                )
                 return nil
             }
 
@@ -598,18 +609,22 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
                     context.diagnose(
                         Diagnostic(
                             node: Syntax(binding),
-                            message: MessagePackMacroDiagnostic.unsupportedPattern))
+                            message: MessagePackMacroDiagnostic.unsupportedPattern
+                        )
+                    )
                     return nil
                 }
                 let name = String(pattern.identifier.text.filter { $0 != "`" })
                 let defaultValue = binding.initializer?.value.trimmedDescription
                 let isDecodable = !(isLet && defaultValue != nil)
 
-                if isDecodable && declaredType == nil {
+                if isDecodable, declaredType == nil {
                     context.diagnose(
                         Diagnostic(
                             node: Syntax(binding),
-                            message: MessagePackMacroDiagnostic.missingTypeAnnotation))
+                            message: MessagePackMacroDiagnostic.missingTypeAnnotation
+                        )
+                    )
                     return nil
                 }
 
@@ -630,7 +645,8 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
                         defaultValue: defaultValue,
                         isDecodable: isDecodable,
                         syntax: Syntax(binding)
-                    ))
+                    )
+                )
             }
             fields.append(contentsOf: collected.reversed())
         }
@@ -651,8 +667,7 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
             let arguments = identifier.genericArgumentClause?.arguments,
             arguments.count == 1,
             let first = arguments.first,
-            case .type(let wrapped) = first.argument
-        {
+            case .type(let wrapped) = first.argument {
             return wrapped
         }
         if let member = type.as(MemberTypeSyntax.self),
@@ -661,8 +676,7 @@ public struct MessagePackSerializableMacro: ExtensionMacro {
             let arguments = member.genericArgumentClause?.arguments,
             arguments.count == 1,
             let first = arguments.first,
-            case .type(let wrapped) = first.argument
-        {
+            case .type(let wrapped) = first.argument {
             return wrapped
         }
         return nil
